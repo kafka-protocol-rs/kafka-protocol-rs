@@ -1,4 +1,4 @@
-use kafka_protocol::messages::ApiKey;
+use proto_kafka::messages::ApiKey;
 
 #[test]
 fn api_key_iter() {

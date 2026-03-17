@@ -14,9 +14,9 @@
 //!
 //! ```rust
 //! use bytes::BytesMut;
-//! use kafka_protocol::protocol::{encode_request_header_into_buffer, decode_request_header_from_buffer};
-//! use kafka_protocol::messages::RequestHeader;
-//! use kafka_protocol::protocol::{StrBytes, Encodable, Decodable};
+//! use proto_kafka::protocol::{encode_request_header_into_buffer, decode_request_header_from_buffer};
+//! use proto_kafka::messages::RequestHeader;
+//! use proto_kafka::protocol::{StrBytes, Encodable, Decodable};
 //!
 //! let mut request_header = RequestHeader::default();
 //! request_header.correlation_id = 1;
@@ -38,9 +38,9 @@
 //! type to a [`bytes::Bytes`] buffer.
 //!
 //! ```rust
-//! use kafka_protocol::protocol::{StrBytes, Encodable, HeaderVersion, encode_request_header_into_buffer};
+//! use proto_kafka::protocol::{StrBytes, Encodable, HeaderVersion, encode_request_header_into_buffer};
 //! use bytes::{BytesMut, Bytes};
-//! use kafka_protocol::messages::{RequestHeader, ApiKey, ApiVersionsRequest};
+//! use proto_kafka::messages::{RequestHeader, ApiKey, ApiVersionsRequest};
 //! # use std::error::Error;
 //!
 //! let mut buf = BytesMut::new();
@@ -71,11 +71,11 @@
 //! ```
 //! # #[cfg(feature = "messages_enums")]
 //! # {
-//! use kafka_protocol::messages::{RequestHeader, ApiVersionsRequest, ApiKey, RequestKind};
-//! use kafka_protocol::protocol::{Encodable, Decodable, StrBytes, HeaderVersion, decode_request_header_from_buffer, encode_request_header_into_buffer};
+//! use proto_kafka::messages::{RequestHeader, ApiVersionsRequest, ApiKey, RequestKind};
+//! use proto_kafka::protocol::{Encodable, Decodable, StrBytes, HeaderVersion, decode_request_header_from_buffer, encode_request_header_into_buffer};
 //! use bytes::{BytesMut, Buf};
 //! use std::convert::TryFrom;
-//! use kafka_protocol::protocol::buf::ByteBuf;
+//! use proto_kafka::protocol::buf::ByteBuf;
 //! # let mut buf = BytesMut::new();
 //! # let mut req_header = RequestHeader::default();
 //! # req_header.request_api_version = 3;

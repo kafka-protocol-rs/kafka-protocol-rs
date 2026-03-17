@@ -1,6 +1,6 @@
 use bytes::{Buf, BufMut, BytesMut};
-use kafka_protocol::protocol::encode_request_header_into_buffer;
-use kafka_protocol::{
+use proto_kafka::protocol::encode_request_header_into_buffer;
+use proto_kafka::{
     messages::{RequestHeader, ResponseHeader},
     protocol::{Decodable, Encodable, HeaderVersion},
 };

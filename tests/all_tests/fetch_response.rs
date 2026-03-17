@@ -1,8 +1,8 @@
 #[cfg(feature = "client")]
 mod client_tests {
     use bytes::Bytes;
-    use kafka_protocol::records::Compression;
-    use kafka_protocol::{
+    use proto_kafka::records::Compression;
+    use proto_kafka::{
         messages::FetchResponse, protocol::Decodable, records::RecordBatchDecoder,
     };
 

@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use kafka_protocol::protocol::decode_request_header_from_buffer;
+use proto_kafka::protocol::decode_request_header_from_buffer;
 
 #[test]
 fn request_header() {

@@ -1,6 +1,6 @@
 use bytes::Bytes;
-use kafka_protocol::messages::ApiVersionsRequest;
-use kafka_protocol::protocol::Decodable;
+use proto_kafka::messages::ApiVersionsRequest;
+use proto_kafka::protocol::Decodable;
 
 #[test]
 fn api_versions() {

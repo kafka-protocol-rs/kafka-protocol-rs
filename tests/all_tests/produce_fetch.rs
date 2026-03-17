@@ -1,7 +1,7 @@
 use std::{net::TcpStream, time::Duration};
 
 use bytes::{Bytes, BytesMut};
-use kafka_protocol::{
+use proto_kafka::{
     messages::{
         create_topics_request::CreatableTopic,
         fetch_request::{FetchPartition, FetchTopic},

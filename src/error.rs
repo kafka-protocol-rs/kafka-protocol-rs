@@ -11,7 +11,7 @@ pub trait ParseResponseErrorCode {
     /// ## Examples
     ///
     /// ```rust
-    /// use kafka_protocol::error::ParseResponseErrorCode;
+    /// use proto_kafka::error::ParseResponseErrorCode;
     ///
     /// assert_eq!(0.ok(), Some(()));
     /// assert_eq!((-1).ok(), None);
@@ -28,7 +28,7 @@ pub trait ParseResponseErrorCode {
     /// ## Examples
     ///
     /// ```rust
-    /// use kafka_protocol::error::{
+    /// use proto_kafka::error::{
     ///     ParseResponseErrorCode,
     ///     ResponseError,
     /// };
@@ -45,7 +45,7 @@ pub trait ParseResponseErrorCode {
     /// ## Examples
     ///
     /// ```rust
-    /// use kafka_protocol::error::ParseResponseErrorCode;
+    /// use proto_kafka::error::ParseResponseErrorCode;
     ///
     /// assert_eq!(0.is_ok(), true);
     /// assert_eq!((-1).is_ok(), false);
@@ -59,7 +59,7 @@ pub trait ParseResponseErrorCode {
     /// ## Examples
     ///
     /// ```rust
-    /// use kafka_protocol::error::ParseResponseErrorCode;
+    /// use proto_kafka::error::ParseResponseErrorCode;
     ///
     /// assert_eq!(0.is_err(), false);
     /// assert_eq!((-1).is_err(), true);
