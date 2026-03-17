@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+pub mod customizations;
 pub mod generate_messages;
 
 fn main() -> Result<(), Error> {
@@ -67,6 +68,9 @@ fn main() -> Result<(), Error> {
     }
 
     generate_messages::run(messages_module_dir, input_file_paths)?;
+
+    println!("Applying post-generation customizations...");
+    customizations::apply(messages_module_dir).expect("Failed to apply customizations");
 
     println!("Running cargo fmt...");
     let mut process = Command::new("cargo")
