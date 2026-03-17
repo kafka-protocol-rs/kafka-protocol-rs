@@ -2,9 +2,7 @@
 mod client_tests {
     use bytes::Bytes;
     use proto_kafka::records::Compression;
-    use proto_kafka::{
-        messages::FetchResponse, protocol::Decodable, records::RecordBatchDecoder,
-    };
+    use proto_kafka::{messages::FetchResponse, protocol::Decodable, records::RecordBatchDecoder};
 
     const HEADERS: [u8; 45] = [
         // Throttle time
@@ -179,7 +177,7 @@ mod client_tests {
     fn decompress_record_batch_data(
         compressed_buffer: &mut bytes::Bytes,
         compression: Compression,
-    ) -> anyhow::Result<Bytes> {
+    ) -> proto_kafka::error::Result<Bytes> {
         match compression {
             Compression::None => Ok(compressed_buffer.to_vec().into()),
             _ => {

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::ops::RangeBounds;
 use std::{borrow::Borrow, fmt::Display};
 
-use anyhow::{bail, Result};
+use crate::error::{bail, Result};
 use buf::{ByteBuf, ByteBufMut};
 use bytes::Bytes;
 
@@ -223,7 +223,7 @@ pub trait Request: Message + Encodable + Decodable + HeaderVersion {
 /// Decode the request header from the provided buffer.
 pub fn decode_request_header_from_buffer<B: ByteBuf>(buf: &mut B) -> Result<RequestHeader> {
     let api_key = ApiKey::try_from(bytes::Buf::get_i16(&mut buf.peek_bytes(0..2)))
-        .map_err(|_| anyhow::Error::msg("Unknown API key"))?;
+        .map_err(|_| crate::error::ProtocolError::UnknownApiKey)?;
     let api_version = bytes::Buf::get_i16(&mut buf.peek_bytes(2..4));
     let header_version = api_key.request_header_version(api_version);
     RequestHeader::decode(buf, header_version)
@@ -235,7 +235,7 @@ pub fn encode_request_header_into_buffer<B: ByteBufMut>(
     header: &RequestHeader,
 ) -> Result<()> {
     let api_key = ApiKey::try_from(header.request_api_key)
-        .map_err(|_| anyhow::Error::msg("Unknown API key"))?;
+        .map_err(|_| crate::error::ProtocolError::UnknownApiKey)?;
     let version = api_key.request_header_version(header.request_api_version);
     header.encode(buf, version)
 }

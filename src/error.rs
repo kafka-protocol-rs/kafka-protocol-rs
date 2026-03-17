@@ -170,7 +170,7 @@ macro_rules! define_errors {
                     }
                 }
 
-                fn try_as_str(&self) -> Result<&'static str, i16> {
+                fn try_as_str(&self) -> std::result::Result<&'static str, i16> {
                     match *self {
                         $name::Unknown(code) => Err(code),
                         $(
@@ -328,3 +328,106 @@ define_errors! { ResponseError,
     (STREAMS_TOPOLOGY_FENCED,               132, false, "The supplied topology epoch is outdated."),
     (SHARE_SESSION_LIMIT_REACHED,           133, true, "The limit of share sessions has been reached."),
 }
+
+/// Errors that can occur during Kafka protocol encoding/decoding.
+#[derive(Debug, thiserror::Error)]
+pub enum ProtocolError {
+    /// A value is too large to encode.
+    #[error("{description} is too long to encode ({size} bytes)")]
+    TooLong {
+        /// What was too long
+        description: &'static str,
+        /// The size that exceeded the limit
+        size: usize,
+    },
+
+    /// A decoded length was negative.
+    #[error("{description} length is negative ({value})")]
+    NegativeLength {
+        /// What had a negative length
+        description: &'static str,
+        /// The negative value
+        value: i64,
+    },
+
+    /// The specified version is not supported by this message type.
+    #[error("specified version not supported by this message type")]
+    UnsupportedVersion,
+
+    /// A field is set that is not available on the selected protocol version.
+    #[error("A field is set that is not available on the selected protocol version")]
+    FieldNotAvailable,
+
+    /// A tagged field is not valid for the specified version.
+    #[error("Tag {tag} is not valid for version {version}")]
+    InvalidTag {
+        /// The tag number
+        tag: u32,
+        /// The version
+        version: i16,
+    },
+
+    /// Message sets of the specified version are not supported.
+    #[error("message sets v{0} are unsupported")]
+    UnsupportedMessageSet(i8),
+
+    /// The API key is unknown.
+    #[error("Unknown API key")]
+    UnknownApiKey,
+
+    /// CRC check failed.
+    #[error("CRC check failed (expected {expected:#010x}, got {actual:#010x})")]
+    CrcCheckFailed {
+        /// The expected CRC value
+        expected: u32,
+        /// The actual CRC value
+        actual: u32,
+    },
+
+    /// Not enough bytes remaining in the buffer.
+    #[error(transparent)]
+    BufferUnderflow(#[from] crate::protocol::buf::NotEnoughBytesError),
+
+    /// Not enough bytes remaining in the buffer (from bytes crate).
+    #[error(transparent)]
+    TryGet(#[from] bytes::TryGetError),
+
+    /// UTF-8 decoding error.
+    #[error(transparent)]
+    Utf8(#[from] std::str::Utf8Error),
+
+    /// UTF-8 string conversion error.
+    #[error(transparent)]
+    FromUtf8(#[from] std::string::FromUtf8Error),
+
+    /// IO error (from compression).
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    /// Other protocol error.
+    #[error("{0}")]
+    Other(String),
+}
+
+/// Result type alias for protocol operations.
+pub type Result<T> = std::result::Result<T, ProtocolError>;
+
+/// Extension trait for adding context to errors, replacing `anyhow::Context`.
+pub(crate) trait ResultExt<T> {
+    /// Add a context message to an error.
+    fn context(self, msg: &'static str) -> Result<T>;
+}
+
+impl<T, E: std::fmt::Display> ResultExt<T> for std::result::Result<T, E> {
+    fn context(self, msg: &'static str) -> Result<T> {
+        self.map_err(|e| ProtocolError::Other(format!("{msg}: {e}")))
+    }
+}
+
+/// Macro replacement for `anyhow::bail!`.
+macro_rules! bail {
+    ($($arg:tt)*) => {
+        return Err($crate::error::ProtocolError::Other(format!($($arg)*)))
+    };
+}
+pub(crate) use bail;

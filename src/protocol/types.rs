@@ -5,8 +5,8 @@
 //!
 //! It is unnecessary to interact directly with these types for most use cases.
 use super::{Decodable, Decoder, Encodable, Encoder, NewType, StrBytes};
+use crate::error::{bail, Result};
 use crate::protocol::buf::{ByteBuf, ByteBufMut};
-use anyhow::{bail, Result};
 use std::convert::TryFrom;
 use std::string::String as StdString;
 

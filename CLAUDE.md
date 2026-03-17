@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Fork of [tychedelia/kafka-protocol-rs](https://github.com/tychedelia/kafka-protocol-rs), which seems no longer actively maintained. This is a Rust implementation of the Kafka wire protocol (`proto-kafka` crate, v0.16.1). Message types are **code-generated** from Kafka's JSON schema files, currently tracking Kafka 4.1.0. The crate covers all 87 API keys with full version support.
+Derived from [tychedelia/kafka-protocol-rs](https://github.com/tychedelia/kafka-protocol-rs), which is no longer actively maintained. This is a Rust implementation of the Kafka wire protocol (`proto-kafka` crate, v0.17.0). Message types are **code-generated** from Kafka's JSON schema files, currently tracking Kafka 4.1.0. The crate covers all 87 API keys with full version support.
 
 ## Build Commands
 
@@ -44,7 +44,7 @@ cargo publish --dry-run
 - **`src/protocol/`** — Core traits (`Message`, `Encodable`, `Decodable`, `Request`, `HeaderVersion`), primitive type encoders/decoders (`types.rs`), and buffer utilities with gap-based CRC computation (`buf.rs`).
 - **`src/records.rs`** — Record batch encoding/decoding with compression, CRC-32c checksums, and `RecordIterator` for streaming across multiple batches.
 - **`src/compression/`** — Pluggable compression (gzip, snappy, zstd, lz4). Snappy uses Kafka-compatible Java format with fallback decoding for non-Kafka snappy.
-- **`src/error.rs`** — Kafka error codes and `ParseResponseErrorCode` trait.
+- **`src/error.rs`** — `ProtocolError` enum (thiserror-based), `Result<T>` type alias, `bail!` macro, `ResultExt` context trait, and Kafka `ResponseError` codes.
 
 ### Feature Flags
 
@@ -59,7 +59,7 @@ cargo publish --dry-run
 - Every encode/decode call requires an explicit API version parameter.
 - Messages contain **all** fields for every version (not `Option`); unused fields have default/nil values.
 - `StrBytes` is a zero-copy string type backed by `bytes::Bytes`.
-- Errors use `anyhow::Result<T>` throughout.
+- Errors use `ProtocolError` (thiserror) via `crate::error::Result<T>`. No `anyhow` dependency.
 - `#[allow(clippy::all)]` is applied to the generated `messages` module.
 
 ### Testing

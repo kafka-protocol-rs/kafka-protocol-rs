@@ -3,8 +3,8 @@
 //! This module has implementations of gzip, Snappy, as well as a noop compression format that
 //! allows encoding and decoding records into a [`Record`](crate::records::Record).
 
+use crate::error::Result;
 use crate::protocol::buf::{ByteBuf, ByteBufMut};
-use anyhow::Result;
 
 #[cfg(feature = "gzip")]
 mod gzip;

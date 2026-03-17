@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use anyhow::{Context, Result};
+use crate::error::{Result, ResultExt};
 use bytes::buf::BufMut;
 use bytes::{Bytes, BytesMut};
 use flate2::write::{GzDecoder, GzEncoder};

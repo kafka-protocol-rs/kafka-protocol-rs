@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use crate::error::{bail, Result, ResultExt};
 use bytes::{Buf as _, BufMut as _, Bytes, BytesMut};
 use snap::raw::*;
 
@@ -65,7 +65,7 @@ impl<B: ByteBuf> Decompressor<B> for Snappy {
     {
         // See https://github.com/xerial/snappy-java?tab=readme-ov-file#compatibility-notes
         if !compressed.has_remaining() {
-            anyhow::bail!("expected some bytes in snappy stream");
+            bail!("expected some bytes in snappy stream");
         }
 
         // We fall back to non-Kafka "raw" snappy compression if the magic header is not present
@@ -75,7 +75,8 @@ impl<B: ByteBuf> Decompressor<B> for Snappy {
         // try_get_bytes advances the buffer. If the magic doesn't match,
         // the raw fallback needs the full original data.
         let has_xerial_magic = compressed.remaining() >= MAGIC_HEADER.len()
-            && compressed.try_peek_bytes(0..MAGIC_HEADER.len())
+            && compressed
+                .try_peek_bytes(0..MAGIC_HEADER.len())
                 .is_ok_and(|magic| *magic == MAGIC_HEADER[..]);
 
         if !has_xerial_magic {

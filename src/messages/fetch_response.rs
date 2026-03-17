@@ -7,7 +7,7 @@
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
 
-use anyhow::{bail, Result};
+use crate::error::{bail, Result};
 use bytes::Bytes;
 use uuid::Uuid;
 
@@ -1237,11 +1237,6 @@ pub struct PartitionData {
     /// Supported API versions: 4-18
     pub records: Option<Bytes>,
 
-    /// Record data segments for zero-copy multi-batch encoding.
-    /// When non-empty, these are used instead of `records`.
-    #[doc(hidden)]
-    pub record_segments: Vec<Bytes>,
-
     /// Other tagged fields
     pub unknown_tagged_fields: BTreeMap<i32, Bytes>,
 }
@@ -1346,11 +1341,6 @@ impl PartitionData {
         self.records = value;
         self
     }
-    /// Sets `record_segments` for zero-copy multi-batch encoding.
-    pub fn with_record_segments(mut self, value: Vec<Bytes>) -> Self {
-        self.record_segments = value;
-        self
-    }
     /// Sets unknown_tagged_fields to the passed value.
     pub fn with_unknown_tagged_fields(mut self, value: BTreeMap<i32, Bytes>) -> Self {
         self.unknown_tagged_fields = value;
@@ -1360,34 +1350,6 @@ impl PartitionData {
     pub fn with_unknown_tagged_field(mut self, key: i32, value: Bytes) -> Self {
         self.unknown_tagged_fields.insert(key, value);
         self
-    }
-
-    /// Constructs a partition response with only the fields needed for fetch.
-    /// Avoids the allocations in `Default` (BTreeMap, Vec, Bytes).
-    #[inline]
-    pub fn for_fetch(
-        partition_index: i32,
-        high_watermark: i64,
-        records: Option<Bytes>,
-        record_segments: Vec<Bytes>,
-        error_code: i16,
-        log_start_offset: i64,
-    ) -> Self {
-        Self {
-            partition_index,
-            error_code,
-            high_watermark,
-            last_stable_offset: high_watermark,
-            log_start_offset,
-            diverging_epoch: Default::default(),
-            current_leader: Default::default(),
-            snapshot_id: Default::default(),
-            aborted_transactions: None,
-            preferred_read_replica: (-1).into(),
-            records,
-            record_segments,
-            unknown_tagged_fields: BTreeMap::new(),
-        }
     }
 }
 
@@ -1417,21 +1379,7 @@ impl Encodable for PartitionData {
                 bail!("A field is set that is not available on the selected protocol version");
             }
         }
-        if !self.record_segments.is_empty() {
-            // Multi-batch zero-copy: write total length prefix, then each segment
-            let total_len: usize = self.record_segments.iter().map(|s| s.len()).sum();
-            if version >= 12 {
-                types::UnsignedVarInt.encode(buf, (total_len as u32) + 1)?;
-            } else {
-                if total_len > i32::MAX as usize {
-                    bail!("Record segments too large to encode ({} bytes)", total_len);
-                }
-                types::Int32.encode(buf, total_len as i32)?;
-            }
-            for segment in &self.record_segments {
-                buf.put_shared_bytes(segment.clone());
-            }
-        } else if version >= 12 {
+        if version >= 12 {
             types::CompactBytes.encode(buf, &self.records)?;
         } else {
             types::Bytes.encode(buf, &self.records)?;
@@ -1519,15 +1467,7 @@ impl Encodable for PartitionData {
                 bail!("A field is set that is not available on the selected protocol version");
             }
         }
-        if !self.record_segments.is_empty() {
-            let total_len: usize = self.record_segments.iter().map(|s| s.len()).sum();
-            if version >= 12 {
-                total_size += types::UnsignedVarInt.compute_size((total_len as u32) + 1)?;
-            } else {
-                total_size += 4; // i32 length prefix
-            }
-            total_size += total_len;
-        } else if version >= 12 {
+        if version >= 12 {
             total_size += types::CompactBytes.compute_size(&self.records)?;
         } else {
             total_size += types::Bytes.compute_size(&self.records)?;
@@ -1662,7 +1602,6 @@ impl Decodable for PartitionData {
             aborted_transactions,
             preferred_read_replica,
             records,
-            record_segments: Vec::new(),
             unknown_tagged_fields,
         })
     }
@@ -1682,7 +1621,6 @@ impl Default for PartitionData {
             aborted_transactions: Some(Default::default()),
             preferred_read_replica: (-1).into(),
             records: Some(Default::default()),
-            record_segments: Vec::new(),
             unknown_tagged_fields: BTreeMap::new(),
         }
     }
@@ -1832,163 +1770,5 @@ impl HeaderVersion for FetchResponse {
         } else {
             0
         }
-    }
-}
-
-#[cfg(test)]
-#[cfg(all(feature = "broker", feature = "client"))]
-mod tests {
-    use super::*;
-    use bytes::{Buf, BytesMut};
-    use crate::protocol::buf::SegmentedBuf;
-    use crate::protocol::Encodable;
-
-    /// Encode a PartitionData with record_segments, decode it back, and verify
-    /// the decoded records field contains the concatenated segment data.
-    #[test]
-    fn record_segments_roundtrip_legacy_version() {
-        let batch1 = Bytes::from_static(b"batch-one-data");
-        let batch2 = Bytes::from_static(b"batch-two-data");
-
-        let pd = PartitionData::for_fetch(
-            0,
-            100,
-            None,
-            vec![batch1.clone(), batch2.clone()],
-            0,
-            0,
-        );
-
-        // Encode with version 4 (legacy, uses Int32 length prefix)
-        let mut buf = BytesMut::new();
-        pd.encode(&mut buf, 4).unwrap();
-
-        // Decode and verify
-        let mut read_buf: Bytes = buf.freeze();
-        let decoded = PartitionData::decode(&mut read_buf, 4).unwrap();
-        let records = decoded.records.expect("records should be present");
-        let mut expected = BytesMut::new();
-        expected.extend_from_slice(&batch1);
-        expected.extend_from_slice(&batch2);
-        assert_eq!(records, expected.freeze());
-    }
-
-    /// Same roundtrip but with version 12+ (compact bytes encoding).
-    #[test]
-    fn record_segments_roundtrip_flexible_version() {
-        let batch1 = Bytes::from_static(b"flex-batch-1");
-        let batch2 = Bytes::from_static(b"flex-batch-2");
-
-        let pd = PartitionData::for_fetch(
-            1,
-            200,
-            None,
-            vec![batch1.clone(), batch2.clone()],
-            0,
-            50,
-        );
-
-        // Encode with version 12 (flexible, uses CompactBytes)
-        let mut buf = BytesMut::new();
-        pd.encode(&mut buf, 12).unwrap();
-
-        // Decode and verify
-        let mut read_buf: Bytes = buf.freeze();
-        let decoded = PartitionData::decode(&mut read_buf, 12).unwrap();
-        let records = decoded.records.expect("records should be present");
-        let mut expected = BytesMut::new();
-        expected.extend_from_slice(&batch1);
-        expected.extend_from_slice(&batch2);
-        assert_eq!(records, expected.freeze());
-    }
-
-    /// Verify compute_size matches actual encoded size for record_segments.
-    #[test]
-    fn record_segments_compute_size_matches_encoded() {
-        let pd = PartitionData::for_fetch(
-            0,
-            100,
-            None,
-            vec![
-                Bytes::from_static(b"aaaa"),
-                Bytes::from_static(b"bbbb"),
-            ],
-            0,
-            0,
-        );
-
-        for version in [4i16, 12] {
-            let computed = pd.compute_size(version).unwrap();
-            let mut buf = BytesMut::new();
-            pd.encode(&mut buf, version).unwrap();
-            assert_eq!(
-                computed,
-                buf.len(),
-                "compute_size mismatch for version {}",
-                version
-            );
-        }
-    }
-
-    /// Verify zero-copy path: encoding into SegmentedBuf stores shared segments.
-    #[test]
-    fn record_segments_into_segmented_buf() {
-        let batch = Bytes::from_static(b"zero-copy-record-data");
-
-        let pd = PartitionData::for_fetch(
-            0,
-            50,
-            None,
-            vec![batch.clone()],
-            0,
-            0,
-        );
-
-        let mut seg_buf = SegmentedBuf::new();
-        pd.encode(&mut seg_buf, 4).unwrap();
-
-        // Collect all data from the segmented buf
-        let mut collected = Vec::new();
-        while seg_buf.has_remaining() {
-            let chunk = seg_buf.chunk();
-            collected.extend_from_slice(chunk);
-            let len = chunk.len();
-            seg_buf.advance(len);
-        }
-
-        // Decode from the collected bytes
-        let mut read_buf = Bytes::from(collected);
-        let decoded = PartitionData::decode(&mut read_buf, 4).unwrap();
-        assert_eq!(decoded.records.unwrap(), batch);
-    }
-
-    /// Verify that for_fetch produces correct field values.
-    #[test]
-    fn for_fetch_constructor_fields() {
-        let pd = PartitionData::for_fetch(7, 999, None, vec![], 3, 42);
-        assert_eq!(pd.partition_index, 7);
-        assert_eq!(pd.high_watermark, 999);
-        assert_eq!(pd.last_stable_offset, 999);
-        assert_eq!(pd.log_start_offset, 42);
-        assert_eq!(pd.error_code, 3);
-        assert_eq!(pd.preferred_read_replica, -1);
-        assert!(pd.records.is_none());
-        assert!(pd.record_segments.is_empty());
-    }
-
-    /// Verify that empty record_segments falls through to normal records encoding.
-    #[test]
-    fn empty_record_segments_uses_records_field() {
-        let record_data = Bytes::from_static(b"normal-records");
-        let pd = PartitionData::default()
-            .with_partition_index(0)
-            .with_records(Some(record_data.clone()));
-
-        let mut buf = BytesMut::new();
-        pd.encode(&mut buf, 4).unwrap();
-
-        let mut read_buf: Bytes = buf.freeze();
-        let decoded = PartitionData::decode(&mut read_buf, 4).unwrap();
-        assert_eq!(decoded.records.unwrap(), record_data);
     }
 }

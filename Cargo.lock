@@ -1464,9 +1464,8 @@ dependencies = [
 
 [[package]]
 name = "proto-kafka"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
- "anyhow",
  "bytes",
  "crc",
  "crc32c",
@@ -1476,6 +1475,7 @@ dependencies = [
  "paste",
  "snap",
  "testcontainers",
+ "thiserror",
  "uuid",
  "zstd",
 ]

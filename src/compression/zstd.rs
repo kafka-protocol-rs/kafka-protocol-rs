@@ -1,5 +1,5 @@
+use crate::error::{Result, ResultExt};
 use crate::protocol::buf::{ByteBuf, ByteBufMut};
-use anyhow::{Context, Result};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::{Compressor, Decompressor};
@@ -47,7 +47,7 @@ impl<B: ByteBuf> Decompressor<B> for Zstd {
 mod test {
     use crate::compression::Zstd;
     use crate::compression::{Compressor, Decompressor};
-    use anyhow::Result;
+    use crate::error::Result;
     use bytes::BytesMut;
     use std::fmt::Write;
     use std::str;
@@ -57,7 +57,7 @@ mod test {
     fn test_zstd() {
         let mut compressed = BytesMut::new();
         Zstd::compress(&mut compressed, |buf| -> Result<()> {
-            buf.write_str("hello zstd")?;
+            buf.write_str("hello zstd").unwrap();
             Ok(())
         })
         .unwrap();

@@ -1,5 +1,5 @@
+use crate::error::{Result, ResultExt};
 use crate::protocol::buf::{ByteBuf, ByteBufMut};
-use anyhow::{Context, Result};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use lz4::BlockMode;
 use lz4::{Decoder, EncoderBuilder};
@@ -58,7 +58,7 @@ impl<B: ByteBuf> Decompressor<B> for Lz4 {
 mod test {
     use crate::compression::Lz4;
     use crate::compression::{Compressor, Decompressor};
-    use anyhow::Result;
+    use crate::error::Result;
     use bytes::BytesMut;
     use std::fmt::Write;
     use std::str;

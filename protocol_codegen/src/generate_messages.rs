@@ -43,10 +43,7 @@ pub fn run(messages_module_dir: &str, mut input_file_paths: Vec<PathBuf>) -> Res
     writeln!(m, "#[cfg(feature = \"messages_enums\")]")?;
     writeln!(m, "#[cfg(any(feature = \"client\", feature = \"broker\"))]")?;
     writeln!(m, "use crate::protocol::Decodable;")?;
-    writeln!(m, "use anyhow::Result;")?;
-    writeln!(m, "#[cfg(feature = \"messages_enums\")]")?;
-    writeln!(m, "#[cfg(any(feature = \"client\", feature = \"broker\"))]")?;
-    writeln!(m, "use anyhow::Context;")?;
+    writeln!(m, "use crate::error::Result;")?;
     writeln!(m)?;
 
     let mut entity_types = BTreeSet::new();
@@ -224,7 +221,10 @@ pub fn run(messages_module_dir: &str, mut input_file_paths: Vec<PathBuf>) -> Res
     writeln!(m, "impl TryFrom<i16> for ApiKey {{")?;
     writeln!(m, "    type Error = ();")?;
     writeln!(m)?;
-    writeln!(m, "    fn try_from(v: i16) -> Result<Self, Self::Error> {{")?;
+    writeln!(
+        m,
+        "    fn try_from(v: i16) -> std::result::Result<Self, Self::Error> {{"
+    )?;
     writeln!(m, "        match v {{")?;
     for (_, request_type) in request_types.iter() {
         let key = request_type.replace("Request", "");
@@ -266,7 +266,7 @@ pub fn run(messages_module_dir: &str, mut input_file_paths: Vec<PathBuf>) -> Res
     writeln!(m, "#[cfg(feature = \"client\")]")?;
     writeln!(
         m,
-        "pub fn encode(&self, bytes: &mut bytes::BytesMut, version: i16) -> anyhow::Result<()> {{"
+        "pub fn encode(&self, bytes: &mut bytes::BytesMut, version: i16) -> crate::error::Result<()> {{"
     )?;
     writeln!(m, "match self {{")?;
     for (_, request_type) in request_types.iter() {
@@ -283,7 +283,7 @@ pub fn run(messages_module_dir: &str, mut input_file_paths: Vec<PathBuf>) -> Res
     writeln!(m, "#[cfg(feature = \"broker\")]")?;
     writeln!(
         m,
-        "pub fn decode(api_key: ApiKey, bytes: &mut bytes::Bytes, version: i16) -> anyhow::Result<RequestKind> {{"
+        "pub fn decode(api_key: ApiKey, bytes: &mut bytes::Bytes, version: i16) -> crate::error::Result<RequestKind> {{"
     )?;
     writeln!(m, "match api_key {{")?;
     for (_, request_type) in request_types.iter() {
@@ -315,24 +315,36 @@ pub fn run(messages_module_dir: &str, mut input_file_paths: Vec<PathBuf>) -> Res
 #[cfg(feature = "messages_enums")]
 #[cfg(any(feature = "client", feature = "broker"))]
 fn decode<T: Decodable>(bytes: &mut bytes::Bytes, version: i16) -> Result<T> {{
-    T::decode(bytes, version).with_context(|| {{
-        format!(
-            "Failed to decode {{}} v{{}} body",
+    T::decode(bytes, version).map_err(|e| {{
+        crate::error::ProtocolError::Other(format!(
+            "Failed to decode {{}} v{{}} body: {{e}}",
             std::any::type_name::<T>(),
             version
-        )
+        ))
     }})
 }}
 
 #[cfg(feature = "messages_enums")]
 #[cfg(any(feature = "client", feature = "broker"))]
 fn encode<T: Encodable>(encodable: &T, bytes: &mut bytes::BytesMut, version: i16) -> Result<()> {{
-    encodable.encode(bytes, version).with_context(|| {{
-        format!(
-            "Failed to encode {{}} v{{}} body",
+    encodable.encode(bytes, version).map_err(|e| {{
+        crate::error::ProtocolError::Other(format!(
+            "Failed to encode {{}} v{{}} body: {{e}}",
             std::any::type_name::<T>(),
             version
-        )
+        ))
+    }})
+}}
+
+#[cfg(feature = "messages_enums")]
+#[cfg(feature = "broker")]
+fn encode_into<T: Encodable, B: crate::protocol::buf::ByteBufMut>(encodable: &T, buf: &mut B, version: i16) -> Result<()> {{
+    encodable.encode(buf, version).map_err(|e| {{
+        crate::error::ProtocolError::Other(format!(
+            "Failed to encode {{}} v{{}} body: {{e}}",
+            std::any::type_name::<T>(),
+            version
+        ))
     }})
 }}
     "#
@@ -364,7 +376,7 @@ fn encode<T: Encodable>(encodable: &T, bytes: &mut bytes::BytesMut, version: i16
     writeln!(m, "#[cfg(feature = \"broker\")]")?;
     writeln!(
         m,
-        "pub fn encode(&self, bytes: &mut bytes::BytesMut, version: i16) -> anyhow::Result<()> {{"
+        "pub fn encode(&self, bytes: &mut bytes::BytesMut, version: i16) -> crate::error::Result<()> {{"
     )?;
     writeln!(m, "match self {{")?;
     for (_, response_type) in response_types.iter() {
@@ -379,12 +391,32 @@ fn encode<T: Encodable>(encodable: &T, bytes: &mut bytes::BytesMut, version: i16
 
     writeln!(
         m,
+        "/// Encode the message into a `ByteBufMut` (e.g. `SegmentedBuf` for zero-copy)."
+    )?;
+    writeln!(m, "#[cfg(feature = \"broker\")]")?;
+    writeln!(
+        m,
+        "pub fn encode_into<B: crate::protocol::buf::ByteBufMut>(&self, buf: &mut B, version: i16) -> crate::error::Result<()> {{"
+    )?;
+    writeln!(m, "match self {{")?;
+    for (_, response_type) in response_types.iter() {
+        let variant = response_type.trim_end_matches("Response");
+        writeln!(
+            m,
+            "ResponseKind::{variant}(x) => encode_into(x, buf, version),"
+        )?;
+    }
+    writeln!(m, "}}")?;
+    writeln!(m, "}}")?;
+
+    writeln!(
+        m,
         "/// Decode the message from the provided buffer and version"
     )?;
     writeln!(m, "#[cfg(feature = \"client\")]")?;
     writeln!(
         m,
-        "pub fn decode(api_key: ApiKey, bytes: &mut bytes::Bytes, version: i16) -> anyhow::Result<ResponseKind> {{"
+        "pub fn decode(api_key: ApiKey, bytes: &mut bytes::Bytes, version: i16) -> crate::error::Result<ResponseKind> {{"
     )?;
     writeln!(m, "match api_key {{")?;
     for (_, response_type) in response_types.iter() {

@@ -7,7 +7,7 @@
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
 
-use anyhow::{bail, Result};
+use crate::error::{bail, Result};
 use bytes::Bytes;
 use uuid::Uuid;
 

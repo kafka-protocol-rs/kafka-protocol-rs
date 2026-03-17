@@ -31,14 +31,14 @@
 //!     }
 //! }
 //!
-//! fn decompress_record_batch_data(compressed_buffer: &mut bytes::Bytes, compression: Compression) -> anyhow::Result<Bytes> {
+//! fn decompress_record_batch_data(compressed_buffer: &mut bytes::Bytes, compression: Compression) -> proto_kafka::error::Result<Bytes> {
 //!         match compression {
 //!             Compression::None => Ok(compressed_buffer.to_vec().into()),
 //!             _ => { panic!("Compression not implemented") }
 //!         }
 //!  }
 //! ```
-use anyhow::{anyhow, bail, Result};
+use crate::error::{bail, ProtocolError, Result};
 use bytes::{Bytes, BytesMut};
 use crc::{Crc, CRC_32_ISO_HDLC};
 use crc32c::crc32c;
@@ -340,9 +340,7 @@ impl RecordBatchEncoder {
 
         // Record count
         if num_records > i32::MAX as usize {
-            bail!(
-                "Too many records to encode in one batch ({num_records} records)"
-            );
+            bail!("Too many records to encode in one batch ({num_records} records)");
         }
         types::Int32.encode(buf, num_records as i32)?;
 
@@ -376,9 +374,9 @@ impl RecordBatchEncoder {
                 })?,
                 #[allow(unreachable_patterns)]
                 c => {
-                    return Err(anyhow!(
+                    return Err(ProtocolError::Other(format!(
                         "Support for {c:?} is not enabled as a cargo feature"
-                    ))
+                    )))
                 }
             }
         }
@@ -387,9 +385,7 @@ impl RecordBatchEncoder {
         // Fill size gap
         let batch_size = batch_end - batch_start;
         if batch_size > i32::MAX as usize {
-            bail!(
-                "Record batch was too large to encode ({batch_size} bytes)"
-            );
+            bail!("Record batch was too large to encode ({batch_size} bytes)");
         }
 
         buf.fill_typed_gap(size_gap, batch_size as i32);
@@ -456,10 +452,8 @@ impl Iterator for RecordIterator {
 
 impl RecordIterator {
     fn new(buf: &mut Bytes) -> Result<Self> {
-        let version =
-            buf.try_peek_bytes(MAGIC_BYTE_OFFSET..(MAGIC_BYTE_OFFSET + 1))?[0] as i8;
-        let (batch_decode_info, record_buf) =
-            RecordBatchDecoder::decode_batch_info(buf, version)?;
+        let version = buf.try_peek_bytes(MAGIC_BYTE_OFFSET..(MAGIC_BYTE_OFFSET + 1))?[0] as i8;
+        let (batch_decode_info, record_buf) = RecordBatchDecoder::decode_batch_info(buf, version)?;
 
         Ok(RecordIterator {
             buf: record_buf,
@@ -470,10 +464,9 @@ impl RecordIterator {
     }
 
     fn try_load_next_batch(&mut self) -> Result<()> {
-        let version = self
-            .source
-            .try_peek_bytes(MAGIC_BYTE_OFFSET..(MAGIC_BYTE_OFFSET + 1))?[0]
-            as i8;
+        let version =
+            self.source
+                .try_peek_bytes(MAGIC_BYTE_OFFSET..(MAGIC_BYTE_OFFSET + 1))?[0] as i8;
         let (batch_decode_info, record_buf) =
             RecordBatchDecoder::decode_batch_info(&mut self.source, version)?;
         self.buf = record_buf;
@@ -580,9 +573,7 @@ impl RecordBatchDecoder {
         let actual_crc = crc32c(buf);
 
         if supplied_crc != actual_crc {
-            bail!(
-                "Cyclic redundancy check failed ({supplied_crc} != {actual_crc})"
-            );
+            bail!("Cyclic redundancy check failed ({supplied_crc} != {actual_crc})");
         }
 
         // Attributes
@@ -700,9 +691,9 @@ impl RecordBatchDecoder {
                 })?,
                 #[allow(unreachable_patterns)]
                 c => {
-                    return Err(anyhow!(
+                    return Err(ProtocolError::Other(format!(
                         "Support for {c:?} is not enabled as a cargo feature"
-                    ))
+                    )))
                 }
             };
         }
@@ -938,9 +929,7 @@ impl Record {
         let value_len: i32 = types::VarInt.decode(buf)?;
         let value = match value_len.cmp(&-1) {
             Ordering::Less => {
-                bail!(
-                    "Unexpected negative record value length ({value_len} bytes)"
-                );
+                bail!("Unexpected negative record value length ({value_len} bytes)");
             }
             Ordering::Equal => None,
             Ordering::Greater => Some(buf.try_get_bytes(value_len as usize)?),
@@ -958,9 +947,7 @@ impl Record {
             // Key len
             let key_len: i32 = types::VarInt.decode(buf)?;
             if key_len < 0 {
-                bail!(
-                    "Unexpected negative record header key length ({key_len} bytes)"
-                );
+                bail!("Unexpected negative record header key length ({key_len} bytes)");
             }
 
             // Key
@@ -972,9 +959,7 @@ impl Record {
             // Value
             let value = match value_len.cmp(&-1) {
                 Ordering::Less => {
-                    bail!(
-                        "Unexpected negative record header value length ({value_len} bytes)"
-                    );
+                    bail!("Unexpected negative record header value length ({value_len} bytes)");
                 }
                 Ordering::Equal => None,
                 Ordering::Greater => Some(buf.try_get_bytes(value_len as usize)?),

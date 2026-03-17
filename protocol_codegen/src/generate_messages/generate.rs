@@ -1350,7 +1350,7 @@ fn write_file_header<W: Write>(w: &mut CodeWriter<W>, name: &str) -> Result<(), 
     writeln!(w)?;
     writeln!(w, "use bytes::Bytes;")?;
     writeln!(w, "use uuid::Uuid;")?;
-    writeln!(w, "use anyhow::{{bail, Result}};")?;
+    writeln!(w, "use crate::error::{{bail, Result}};")?;
     writeln!(w)?;
     writeln!(w, "use crate::protocol::{{")?;
     writeln!(

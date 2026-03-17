@@ -1,5 +1,9 @@
 //! Implementation of [the Kafka wire protocol](https://kafka.apache.org/protocol.html) in Rust.
 //!
+//! **This crate is derived from [`kafka-protocol`](https://crates.io/crates/kafka-protocol)
+//! ([tychedelia/kafka-protocol-rs](https://github.com/tychedelia/kafka-protocol-rs)),
+//! published as `proto-kafka` for continued maintenance and bug fixes.**
+//!
 //! This library follows the approach of the Kafka project and generates the protocol through
 //! [schema defined in JSON](https://github.com/apache/kafka/blob/trunk/clients/src/main/resources/common/message).
 //! This ensures not only compatibility, but easy synchronization when new features are added
@@ -115,5 +119,6 @@ pub mod messages;
 pub mod protocol;
 pub mod records;
 
+pub use error::ProtocolError;
 pub use error::ResponseError;
 pub use indexmap;

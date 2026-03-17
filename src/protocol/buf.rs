@@ -298,9 +298,7 @@ impl SegmentedBuf {
 
     /// Ensure the last segment is an `Inline` and return a mutable reference to it.
     fn current_inline(&mut self) -> &mut BytesMut {
-        if self.segments.is_empty()
-            || !matches!(self.segments.last(), Some(Segment::Inline(_)))
-        {
+        if self.segments.is_empty() || !matches!(self.segments.last(), Some(Segment::Inline(_))) {
             self.segments.push(Segment::Inline(BytesMut::new()));
         }
         match self.segments.last_mut().unwrap() {
@@ -392,10 +390,7 @@ impl ByteBufMut for SegmentedBuf {
             }
             pos += seg_len;
         }
-        panic!(
-            "range {:?} out of bounds (total {})",
-            r, self.total_len
-        );
+        panic!("range {:?} out of bounds (total {})", r, self.total_len);
     }
 
     fn put_shared_bytes(&mut self, bytes: Bytes) {

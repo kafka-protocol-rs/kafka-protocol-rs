@@ -1,4 +1,10 @@
-# Kafka-Protocol [![Build](https://github.com/tychedelia/kafka-protocol-rs/actions/workflows/build-and-test.yml/badge.svg)](https://github.com/0x1991babe/kafka-protocol-rs/actions/workflows/build-and-test.yml) [![crates.io](https://img.shields.io/crates/v/kafka-protocol.svg)](https://crates.io/crates/kafka-protocol) [![docs.rs](https://img.shields.io/docsrs/kafka-protocol)](https://docs.rs/kafka-protocol)
+# proto-kafka [![Build](https://github.com/aovestdipaperino/proto-kafka/actions/workflows/build-and-test.yml/badge.svg)](https://github.com/aovestdipaperino/proto-kafka/actions/workflows/build-and-test.yml) [![crates.io](https://img.shields.io/crates/v/proto-kafka.svg)](https://crates.io/crates/proto-kafka) [![docs.rs](https://img.shields.io/docsrs/proto-kafka)](https://docs.rs/proto-kafka)
+
+> **This crate is a derived work from [`kafka-protocol`](https://crates.io/crates/kafka-protocol)
+> ([tychedelia/kafka-protocol-rs](https://github.com/tychedelia/kafka-protocol-rs)),
+> which appears to be no longer actively maintained.
+> `proto-kafka` is published as a separate crate to provide continued maintenance, bug fixes,
+> and improvements while preserving full API compatibility.**
 
 Rust implementation of the [Kafka wire protocol](https://kafka.apache.org/protocol.html).
 
@@ -10,16 +16,16 @@ for an example of protocol schema.
 
 Protocol messages are generated against a recent stable Kafka release, currently [4.1.0](https://github.com/apache/kafka/releases/tag/4.1.0).
 
-Although the Kafka protocol remains relatively stable and strives to be backwards compatible, new fields are occasionally 
+Although the Kafka protocol remains relatively stable and strives to be backwards compatible, new fields are occasionally
 added. In order to ensure forward compatibility with the protocol, this crate marks all exported items as `#[non-exhaustive]`.
-Protocol messages can be constructed using `Default::default` and updated with builder style methods. 
+Protocol messages can be constructed using `Default::default` and updated with builder style methods.
 
 ## Working with messages
 
 Using `Default::default`:
 ```rust
-use kafka_protocol::messages::{ApiKey, MetadataRequest, RequestHeader};
-use kafka_protocol::protocol::StrBytes;
+use proto_kafka::messages::{ApiKey, MetadataRequest, RequestHeader};
+use proto_kafka::protocol::StrBytes;
 
 let mut header = RequestHeader::default();
 header.client_id = Some(StrBytes::from_static_str("my-client"));
@@ -33,8 +39,8 @@ request.allow_auto_topic_creation = true;
 
 Using builder style methods:
 ```rust
-use kafka_protocol::messages::{ApiKey, MetadataRequest, RequestHeader};
-use kafka_protocol::protocol::StrBytes;
+use proto_kafka::messages::{ApiKey, MetadataRequest, RequestHeader};
+use proto_kafka::protocol::StrBytes;
 
 let header = RequestHeader::default()
     .with_client_id(Some(StrBytes::from_static_str("my-client")))
@@ -53,8 +59,8 @@ matching the version specified in the request header must be provided.
 
 ```rust
 use bytes::BytesMut;
-use kafka_protocol::messages::MetadataRequest;
-use kafka_protocol::protocol::Encodable;
+use proto_kafka::messages::MetadataRequest;
+use proto_kafka::protocol::Encodable;
 
 let mut bytes = BytesMut::new();
 let request = MetadataRequest::default();
@@ -68,8 +74,8 @@ corresponding request.
 
 ```rust
 use bytes::Bytes;
-use kafka_protocol::messages::ApiVersionsRequest;
-use kafka_protocol::protocol::Decodable;
+use proto_kafka::messages::ApiVersionsRequest;
+use proto_kafka::protocol::Decodable;
 
 let bytes: [u8; 25] = [
         0x12, 0x61, 0x70, 0x61, 0x63, 0x68, 0x65, 0x2d,
@@ -77,7 +83,7 @@ let bytes: [u8; 25] = [
         0x76, 0x61, 0x06, 0x32, 0x2e, 0x38, 0x2e, 0x30,
         0x00
 ];
- 
+
 let res = ApiVersionsRequest::decode(&mut Bytes::from(bytes.to_vec()), 3).unwrap();
 ```
 
@@ -86,8 +92,12 @@ let res = ApiVersionsRequest::decode(&mut Bytes::from(bytes.to_vec()), 3).unwrap
 Run `cargo run -p protocol_codegen` in the root path of this repo to generate/update the Rust codes via the latest Kafka
 protocol schema.
 
-Originally implemented by
-[@Diggsey](https://github.com/Diggsey) in a minimal Kafka client implementation [Franz](https://github.com/Diggsey/franz)
+## Attribution
+
+**This crate is derived from [`kafka-protocol`](https://crates.io/crates/kafka-protocol)
+([tychedelia/kafka-protocol-rs](https://github.com/tychedelia/kafka-protocol-rs)).**
+Originally implemented by [@Diggsey](https://github.com/Diggsey) in a minimal Kafka client
+implementation [Franz](https://github.com/Diggsey/franz).
 
 ## MSRV
 

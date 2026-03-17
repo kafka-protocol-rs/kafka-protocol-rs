@@ -3,7 +3,7 @@ members = ["protocol_codegen"]
 
 [package]
 name = "proto-kafka"
-version = "0.16.2"
+version = "0.17.0"
 authors = [
     "Diggory Blake <diggsey@googlemail.com>",
     "Charlotte McElwain <charlotte.c.mcelwain@gmail.com>",
@@ -51,7 +51,7 @@ zstd = { version = "0.13", optional = true }
 lz4 = { version = "1.24", optional = true }
 paste = "1.0.7"
 crc32c = "0.6.4"
-anyhow = "1.0.80"
+thiserror = "2"
 
 
 [dev-dependencies]

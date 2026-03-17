@@ -3,6 +3,7 @@
 //! These messages are generated programmatically. See the [Kafka's protocol documentation](https://kafka.apache.org/protocol.html) for more information about a given message type.
 // WARNING: the items of this module are generated and should not be edited directly.
 
+use crate::error::Result;
 #[cfg(feature = "messages_enums")]
 #[cfg(any(feature = "client", feature = "broker"))]
 use crate::protocol::Decodable;
@@ -13,10 +14,6 @@ use crate::protocol::Encodable;
 use crate::protocol::Request;
 use crate::protocol::VersionRange;
 use crate::protocol::{HeaderVersion, NewType, StrBytes};
-#[cfg(feature = "messages_enums")]
-#[cfg(any(feature = "client", feature = "broker"))]
-use anyhow::Context;
-use anyhow::Result;
 use std::convert::TryFrom;
 
 pub mod consumer_protocol_assignment;
@@ -1621,7 +1618,7 @@ impl ApiKey {
 impl TryFrom<i16> for ApiKey {
     type Error = ();
 
-    fn try_from(v: i16) -> Result<Self, Self::Error> {
+    fn try_from(v: i16) -> std::result::Result<Self, Self::Error> {
         match v {
             x if x == ApiKey::Produce as i16 => Ok(ApiKey::Produce),
             x if x == ApiKey::Fetch as i16 => Ok(ApiKey::Fetch),
@@ -1916,7 +1913,7 @@ pub enum RequestKind {
 impl RequestKind {
     /// Encode the message into the target buffer
     #[cfg(feature = "client")]
-    pub fn encode(&self, bytes: &mut bytes::BytesMut, version: i16) -> anyhow::Result<()> {
+    pub fn encode(&self, bytes: &mut bytes::BytesMut, version: i16) -> crate::error::Result<()> {
         match self {
             RequestKind::Produce(x) => encode(x, bytes, version),
             RequestKind::Fetch(x) => encode(x, bytes, version),
@@ -2013,7 +2010,7 @@ impl RequestKind {
         api_key: ApiKey,
         bytes: &mut bytes::Bytes,
         version: i16,
-    ) -> anyhow::Result<RequestKind> {
+    ) -> crate::error::Result<RequestKind> {
         match api_key {
             ApiKey::Produce => Ok(RequestKind::Produce(decode(bytes, version)?)),
             ApiKey::Fetch => Ok(RequestKind::Fetch(decode(bytes, version)?)),
@@ -2787,24 +2784,24 @@ impl From<DeleteShareGroupOffsetsRequest> for RequestKind {
 #[cfg(feature = "messages_enums")]
 #[cfg(any(feature = "client", feature = "broker"))]
 fn decode<T: Decodable>(bytes: &mut bytes::Bytes, version: i16) -> Result<T> {
-    T::decode(bytes, version).with_context(|| {
-        format!(
-            "Failed to decode {} v{} body",
+    T::decode(bytes, version).map_err(|e| {
+        crate::error::ProtocolError::Other(format!(
+            "Failed to decode {} v{} body: {e}",
             std::any::type_name::<T>(),
             version
-        )
+        ))
     })
 }
 
 #[cfg(feature = "messages_enums")]
 #[cfg(any(feature = "client", feature = "broker"))]
 fn encode<T: Encodable>(encodable: &T, bytes: &mut bytes::BytesMut, version: i16) -> Result<()> {
-    encodable.encode(bytes, version).with_context(|| {
-        format!(
-            "Failed to encode {} v{} body",
+    encodable.encode(bytes, version).map_err(|e| {
+        crate::error::ProtocolError::Other(format!(
+            "Failed to encode {} v{} body: {e}",
             std::any::type_name::<T>(),
             version
-        )
+        ))
     })
 }
 
@@ -2815,12 +2812,12 @@ fn encode_into<T: Encodable, B: crate::protocol::buf::ByteBufMut>(
     buf: &mut B,
     version: i16,
 ) -> Result<()> {
-    encodable.encode(buf, version).with_context(|| {
-        format!(
-            "Failed to encode {} v{} body",
+    encodable.encode(buf, version).map_err(|e| {
+        crate::error::ProtocolError::Other(format!(
+            "Failed to encode {} v{} body: {e}",
             std::any::type_name::<T>(),
             version
-        )
+        ))
     })
 }
 
@@ -3009,7 +3006,7 @@ pub enum ResponseKind {
 impl ResponseKind {
     /// Encode the message into the target buffer
     #[cfg(feature = "broker")]
-    pub fn encode(&self, bytes: &mut bytes::BytesMut, version: i16) -> anyhow::Result<()> {
+    pub fn encode(&self, bytes: &mut bytes::BytesMut, version: i16) -> crate::error::Result<()> {
         match self {
             ResponseKind::Produce(x) => encode(x, bytes, version),
             ResponseKind::Fetch(x) => encode(x, bytes, version),
@@ -3106,7 +3103,7 @@ impl ResponseKind {
         &self,
         buf: &mut B,
         version: i16,
-    ) -> anyhow::Result<()> {
+    ) -> crate::error::Result<()> {
         match self {
             ResponseKind::Produce(x) => encode_into(x, buf, version),
             ResponseKind::Fetch(x) => encode_into(x, buf, version),
@@ -3203,7 +3200,7 @@ impl ResponseKind {
         api_key: ApiKey,
         bytes: &mut bytes::Bytes,
         version: i16,
-    ) -> anyhow::Result<ResponseKind> {
+    ) -> crate::error::Result<ResponseKind> {
         match api_key {
             ApiKey::Produce => Ok(ResponseKind::Produce(decode(bytes, version)?)),
             ApiKey::Fetch => Ok(ResponseKind::Fetch(decode(bytes, version)?)),
