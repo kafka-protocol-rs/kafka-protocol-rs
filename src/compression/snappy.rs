@@ -70,11 +70,15 @@ impl<B: ByteBuf> Decompressor<B> for Snappy {
 
         // We fall back to non-Kafka "raw" snappy compression if the magic header is not present
         // just like the [Java implementation](https://github.com/xerial/snappy-java/blob/48b31663c8b9d01d758368a26416ef6194045c5f/src/main/java/org/xerial/snappy/SnappyInputStream.java#L114).
-        if compressed
-            .try_get_bytes(MAGIC_HEADER.len())
-            .ok()
-            .is_none_or(|magic| *magic != MAGIC_HEADER[..])
-        {
+        //
+        // We must peek at the magic bytes without consuming them, because
+        // try_get_bytes advances the buffer. If the magic doesn't match,
+        // the raw fallback needs the full original data.
+        let has_xerial_magic = compressed.remaining() >= MAGIC_HEADER.len()
+            && compressed.try_peek_bytes(0..MAGIC_HEADER.len())
+                .is_ok_and(|magic| *magic == MAGIC_HEADER[..]);
+
+        if !has_xerial_magic {
             let compressed = compressed.copy_to_bytes(compressed.remaining());
             let actual_len = decompress_len(&compressed).context("failed to read snappy header")?;
             let mut tmp = BytesMut::zeroed(actual_len);
@@ -84,6 +88,9 @@ impl<B: ByteBuf> Decompressor<B> for Snappy {
 
             return f(&mut tmp.into());
         }
+
+        // Consume the magic header now that we know it matches
+        let _ = compressed.try_get_bytes(MAGIC_HEADER.len());
 
         let mut uncompressed = BytesMut::new();
         while compressed.has_remaining() {
@@ -263,5 +270,43 @@ mod tests {
         // Chop off all the record batch bytes before the records
         expected_bytes.advance(61);
         assert_eq!(expected_bytes, decompressed);
+    }
+
+    /// Regression test: raw snappy data ≥16 bytes.
+    ///
+    /// Before the fix, `try_get_bytes(16)` consumed the first 16 bytes
+    /// when checking for the Xerial magic header. If the magic didn't
+    /// match (raw snappy), the fallback got truncated data and failed
+    /// with "failed to decompress raw snappy bytes".
+    ///
+    /// The `decompression_fallback` test above uses only 13 bytes of
+    /// compressed data, so `try_get_bytes(16)` failed (not enough bytes)
+    /// and the bug was never triggered.
+    #[test]
+    fn decompression_fallback_large_payload() {
+        // Create a payload large enough that raw-snappy-compressed output is ≥16 bytes.
+        let original = b"Hello world! This is a test payload that is long enough to \
+            produce more than sixteen bytes of snappy-compressed output, which triggers \
+            the regression where try_get_bytes consumed the magic header probe bytes.";
+
+        // Compress with raw snappy (no Xerial framing)
+        let compressed_vec = snap::raw::Encoder::new()
+            .compress_vec(original)
+            .expect("raw snappy compress");
+        assert!(
+            compressed_vec.len() >= 16,
+            "compressed payload must be ≥16 bytes to trigger the regression (got {})",
+            compressed_vec.len()
+        );
+
+        let mut compressed = Bytes::from(compressed_vec);
+        let decompressed = Snappy::decompress(&mut compressed, |buf| {
+            let mut out = Bytes::new();
+            std::mem::swap(buf, &mut out);
+            Ok(out)
+        })
+        .expect("raw snappy decompression of ≥16 byte payload should succeed");
+
+        assert_eq!(&decompressed[..], &original[..]);
     }
 }
