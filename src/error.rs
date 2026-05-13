@@ -136,7 +136,7 @@ macro_rules! define_errors {
                 #[doc = ""]
                 #[doc = "Returns `None` if the error `code` is `0`."]
                 #[doc = concat!("Otherwise, the `Some(", stringify!($name), ")` is returned.")]
-                pub fn try_from_code(code: i16) -> Option<Self> {
+                pub const fn try_from_code(code: i16) -> Option<Self> {
                     match code {
                         0 => None,
                         $(
@@ -147,7 +147,7 @@ macro_rules! define_errors {
                 }
 
                 /// Get the corresponding error code to the error
-                pub fn code(&self) -> i16 {
+                pub const fn code(&self) -> i16 {
                     match *self {
                         $name::Unknown(code) => code,
                         $(
@@ -159,7 +159,7 @@ macro_rules! define_errors {
                 /// Check if is it a retriable error.
                 ///
                 /// Whether an error is retriable or not is defined by the Kafka protocol.
-                pub fn is_retriable(&self) -> bool {
+                pub const fn is_retriable(&self) -> bool {
                     match *self {
                         // Client-side unknown mark as non-retriable
                         $name::Unknown(_) => false,
