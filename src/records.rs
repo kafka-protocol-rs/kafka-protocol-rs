@@ -40,8 +40,8 @@
 //! ```
 use anyhow::{anyhow, bail, Result};
 use bytes::{Bytes, BytesMut};
+use crc_fast::{checksum, CrcAlgorithm};
 use crc::{Crc, CRC_32_ISO_HDLC};
-use crc32c::crc32c;
 use indexmap::IndexMap;
 
 use crate::protocol::{
@@ -54,6 +54,11 @@ use std::cmp::Ordering;
 use std::convert::TryFrom;
 /// IEEE (checksum) cyclic redundancy check.
 pub const IEEE: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
+
+#[inline]
+fn crc32c(data: &[u8]) -> u32 {
+    checksum(CrcAlgorithm::Crc32Iscsi, data) as u32
+}
 
 /// The different types of compression supported by Kafka.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
