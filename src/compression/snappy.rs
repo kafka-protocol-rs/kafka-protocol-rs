@@ -139,6 +139,7 @@ mod tests {
         let record = Record {
             transactional: false,
             control: false,
+            delete_horizon: false,
             partition_leader_epoch: 0,
             producer_id: 0,
             producer_epoch: 0,
@@ -201,6 +202,7 @@ mod tests {
         let expected_record = Record {
             transactional: false,
             control: false,
+            delete_horizon: false,
             partition_leader_epoch: 0,
             producer_id: 0,
             producer_epoch: 0,
@@ -245,6 +247,7 @@ mod tests {
         let expected_record = Record {
             transactional: false,
             control: false,
+            delete_horizon: false,
             partition_leader_epoch: 0,
             producer_id: 0,
             producer_epoch: 0,
