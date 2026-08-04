@@ -647,14 +647,7 @@ impl Record {
 
         // Timestamp delta
         let timestamp_delta = self.timestamp - min_timestamp;
-        if timestamp_delta > i32::MAX as i64 || timestamp_delta < i32::MIN as i64 {
-            bail!(
-                "Timestamps within batch are too far apart ({}, {})",
-                min_timestamp,
-                self.timestamp
-            );
-        }
-        types::VarInt.encode(buf, timestamp_delta as i32)?;
+        types::VarLong.encode(buf, timestamp_delta)?;
 
         // Offset delta
         let offset_delta = self.offset - min_offset;
@@ -737,14 +730,7 @@ impl Record {
 
         // Timestamp delta
         let timestamp_delta = self.timestamp - min_timestamp;
-        if timestamp_delta > i32::MAX as i64 || timestamp_delta < i32::MIN as i64 {
-            bail!(
-                "Timestamps within batch are too far apart ({}, {})",
-                min_timestamp,
-                self.timestamp
-            );
-        }
-        total_size += types::VarInt.compute_size(timestamp_delta as i32)?;
+        total_size += types::VarLong.compute_size(timestamp_delta)?;
 
         // Offset delta
         let offset_delta = self.offset - min_offset;
@@ -832,8 +818,8 @@ impl Record {
         let _attributes: i8 = types::Int8.decode(buf)?;
 
         // Timestamp delta
-        let timestamp_delta: i32 = types::VarInt.decode(buf)?;
-        let timestamp = batch_decode_info.min_timestamp + timestamp_delta as i64;
+        let timestamp_delta: i64 = types::VarLong.decode(buf)?;
+        let timestamp = batch_decode_info.min_timestamp + timestamp_delta;
 
         // Offset delta
         let offset_delta: i32 = types::VarInt.decode(buf)?;
