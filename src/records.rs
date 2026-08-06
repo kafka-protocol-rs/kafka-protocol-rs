@@ -52,6 +52,36 @@ use crate::protocol::{
 use super::compression::{self as cmpr, Compressor, Decompressor};
 use std::cmp::Ordering;
 use std::convert::TryFrom;
+
+/// Upper bound on how much capacity a record decoder reserves up front, before
+/// any record or header has actually been decoded.
+///
+/// The counts involved (records in a batch, headers on a record) are read from
+/// the wire and are decoupled from the frame length, so a hostile or corrupt
+/// peer can announce a huge count in a tiny message. Handing that number to
+/// `Vec::reserve` / `IndexMap::with_capacity` risks an allocation the allocator
+/// cannot satisfy, which aborts the process rather than returning an error.
+/// Capping the initial reservation still lets the collection grow to hold
+/// whatever is really present, one decoded element at a time.
+const MAX_PREALLOC_ELEMENTS: usize = 1024;
+
+/// Validate a peer-supplied count and return a safe pre-allocation size.
+///
+/// A record occupies several bytes on the wire and a header at least two, so a
+/// count greater than the bytes left in the buffer cannot be a real message; it
+/// is an invalid encoding and is rejected before any allocation. Otherwise we
+/// reserve at most [`MAX_PREALLOC_ELEMENTS`] and grow as elements decode.
+fn bounded_prealloc<B: ByteBuf>(buf: &B, count: usize, what: &str) -> Result<usize> {
+    if count > buf.remaining() {
+        bail!(
+            "{what} declares {count} entries but only {} bytes remain; every entry \
+             requires at least one byte, so this is an invalid encoding",
+            buf.remaining()
+        );
+    }
+    Ok(count.min(MAX_PREALLOC_ELEMENTS))
+}
+
 /// IEEE (checksum) cyclic redundancy check.
 pub const IEEE: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
 
@@ -483,7 +513,11 @@ impl RecordBatchDecoder {
         version: i8,
         records: &mut Vec<Record>,
     ) -> Result<()> {
-        records.reserve(batch_decode_info.record_count);
+        records.reserve(bounded_prealloc(
+            buf,
+            batch_decode_info.record_count,
+            "record batch",
+        )?);
         for _ in 0..batch_decode_info.record_count {
             records.push(Record::decode_new(buf, batch_decode_info, version)?);
         }
@@ -855,7 +889,8 @@ impl Record {
         }
         let num_headers = num_headers as usize;
 
-        let mut headers = IndexMap::with_capacity(num_headers);
+        let mut headers =
+            IndexMap::with_capacity(bounded_prealloc(buf, num_headers, "record headers")?);
         for _ in 0..num_headers {
             // Key len
             let key_len: i32 = types::VarInt.decode(buf)?;
