@@ -10,6 +10,36 @@ use anyhow::{bail, Result};
 use std::convert::TryFrom;
 use std::string::String as StdString;
 
+/// Upper bound on how much capacity an array decoder reserves up front, before
+/// any element has actually been decoded.
+///
+/// The element count is read from the wire and is chosen by the peer. Passing it
+/// straight to `Vec::with_capacity` means a hostile or corrupt peer can request
+/// an allocation the allocator cannot satisfy; that failure is `handle_alloc_error`
+/// (an `abort`), not a catchable panic, so a few bytes on a socket can take down
+/// the process. Capping the initial reservation lets the vector still grow to
+/// hold whatever the wire genuinely contains -- it just grows as elements decode
+/// rather than trusting the header.
+const MAX_PREALLOC_ELEMENTS: usize = 1024;
+
+/// Validate a peer-supplied element count and return a safe pre-allocation size.
+///
+/// Every element occupies at least one byte on the wire, so a count greater than
+/// the number of bytes left in the buffer cannot be a real message -- it is an
+/// invalid encoding, and we reject it before allocating anything. Otherwise we
+/// reserve at most [`MAX_PREALLOC_ELEMENTS`], allowing the collection to grow
+/// from the elements that actually decode.
+fn bounded_prealloc<B: ByteBuf>(buf: &B, count: usize, what: &str) -> Result<usize> {
+    if count > buf.remaining() {
+        bail!(
+            "{what} declares {count} elements but only {} bytes remain; every element \
+             requires at least one byte, so this is an invalid encoding",
+            buf.remaining()
+        );
+    }
+    Ok(count.min(MAX_PREALLOC_ELEMENTS))
+}
+
 macro_rules! define_copy_impl {
     ($e:ident, $t:ty) => (
         impl Encoder<$t> for $e {
@@ -985,7 +1015,8 @@ impl<T, E: Decoder<T>> Decoder<Option<Vec<T>>> for Array<E> {
         match Int32.decode(buf)? {
             -1 => Ok(None),
             n if n >= 0 => {
-                let mut result = Vec::with_capacity(n as usize);
+                let n = n as usize;
+                let mut result = Vec::with_capacity(bounded_prealloc(buf, n, "Array")?);
                 for _ in 0..n {
                     result.push(self.0.decode(buf)?);
                 }
@@ -1093,7 +1124,10 @@ impl<T, E: Decoder<T>> Decoder<Option<Vec<T>>> for CompactArray<E> {
         match UnsignedVarInt.decode(buf)? {
             0 => Ok(None),
             n => {
-                let mut result = Vec::with_capacity((n - 1) as usize);
+                // The compact encoding stores the element count plus one.
+                let count = (n - 1) as usize;
+                let mut result =
+                    Vec::with_capacity(bounded_prealloc(buf, count, "CompactArray")?);
                 for _ in 1..n {
                     result.push(self.0.decode(buf)?);
                 }
