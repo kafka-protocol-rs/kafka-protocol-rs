@@ -124,6 +124,7 @@ struct BatchDecodeInfo {
     base_sequence: i32,
     transactional: bool,
     control: bool,
+    delete_horizon: bool,
     partition_leader_epoch: i32,
     producer_id: i64,
     producer_epoch: i16,
@@ -148,6 +149,8 @@ pub struct Record {
     pub transactional: bool,
     /// Whether this record is a control message, which should not be exposed to the client.
     pub control: bool,
+    /// Whether this record has the delete horizon flag set.
+    pub delete_horizon: bool,
     /// Epoch of the leader for this record 's partition.
     pub partition_leader_epoch: i32,
     /// The identifier of the producer.
@@ -258,6 +261,7 @@ impl RecordBatchEncoder {
             .take_while(|record| {
                 record.transactional == first_record.transactional
                     && record.control == first_record.control
+                    && record.delete_horizon == first_record.delete_horizon
                     && record.partition_leader_epoch == first_record.partition_leader_epoch
                     && record.producer_id == first_record.producer_id
                     && record.producer_epoch == first_record.producer_epoch
@@ -320,6 +324,9 @@ impl RecordBatchEncoder {
         }
         if first_record.control {
             attributes |= 1 << 5;
+        }
+        if first_record.delete_horizon {
+            attributes |= 1 << 6;
         }
         types::Int16.encode(buf, attributes)?;
 
@@ -534,6 +541,7 @@ impl RecordBatchDecoder {
         let attributes: i16 = types::Int16.decode(buf)?;
         let transactional = (attributes & (1 << 4)) != 0;
         let control = (attributes & (1 << 5)) != 0;
+        let delete_horizon = (attributes & (1 << 6)) != 0;
         let compression = match attributes & 0x7 {
             0 => Compression::None,
             1 => Compression::Gzip,
@@ -583,6 +591,7 @@ impl RecordBatchDecoder {
             base_sequence,
             transactional,
             control,
+            delete_horizon,
             partition_leader_epoch,
             producer_id,
             producer_epoch,
@@ -646,14 +655,7 @@ impl Record {
 
         // Timestamp delta
         let timestamp_delta = self.timestamp - min_timestamp;
-        if timestamp_delta > i32::MAX as i64 || timestamp_delta < i32::MIN as i64 {
-            bail!(
-                "Timestamps within batch are too far apart ({}, {})",
-                min_timestamp,
-                self.timestamp
-            );
-        }
-        types::VarInt.encode(buf, timestamp_delta as i32)?;
+        types::VarLong.encode(buf, timestamp_delta)?;
 
         // Offset delta
         let offset_delta = self.offset - min_offset;
@@ -736,14 +738,7 @@ impl Record {
 
         // Timestamp delta
         let timestamp_delta = self.timestamp - min_timestamp;
-        if timestamp_delta > i32::MAX as i64 || timestamp_delta < i32::MIN as i64 {
-            bail!(
-                "Timestamps within batch are too far apart ({}, {})",
-                min_timestamp,
-                self.timestamp
-            );
-        }
-        total_size += types::VarInt.compute_size(timestamp_delta as i32)?;
+        total_size += types::VarLong.compute_size(timestamp_delta)?;
 
         // Offset delta
         let offset_delta = self.offset - min_offset;
@@ -831,8 +826,8 @@ impl Record {
         let _attributes: i8 = types::Int8.decode(buf)?;
 
         // Timestamp delta
-        let timestamp_delta: i32 = types::VarInt.decode(buf)?;
-        let timestamp = batch_decode_info.min_timestamp + timestamp_delta as i64;
+        let timestamp_delta: i64 = types::VarLong.decode(buf)?;
+        let timestamp = batch_decode_info.min_timestamp + timestamp_delta;
 
         // Offset delta
         let offset_delta: i32 = types::VarInt.decode(buf)?;
@@ -901,6 +896,7 @@ impl Record {
         Ok(Self {
             transactional: batch_decode_info.transactional,
             control: batch_decode_info.control,
+            delete_horizon: batch_decode_info.delete_horizon,
             timestamp_type: batch_decode_info.timestamp_type,
             partition_leader_epoch: batch_decode_info.partition_leader_epoch,
             producer_id: batch_decode_info.producer_id,
@@ -926,6 +922,7 @@ mod tests {
         let record = Record {
             transactional: false,
             control: false,
+            delete_horizon: false,
             partition_leader_epoch: 0,
             producer_id: 0,
             producer_epoch: 0,
@@ -958,6 +955,7 @@ mod tests {
         let record = Record {
             transactional: false,
             control: false,
+            delete_horizon: false,
             partition_leader_epoch: 0,
             producer_id: 0,
             producer_epoch: 0,
@@ -992,6 +990,7 @@ mod tests {
                 base_sequence: 0,
                 transactional: false,
                 control: false,
+                delete_horizon: false,
                 partition_leader_epoch: 0,
                 producer_id: 0,
                 producer_epoch: 0,
