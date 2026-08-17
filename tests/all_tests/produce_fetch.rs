@@ -196,6 +196,7 @@ fn new_record(offset: i64, v2: bool) -> Record {
     Record {
         transactional: false,
         control: false,
+        delete_horizon: false,
         partition_leader_epoch: if v2 { 0 } else { -1 },
         producer_id: -1,
         producer_epoch: -1,
