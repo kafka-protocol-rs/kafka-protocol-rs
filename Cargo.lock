@@ -1320,38 +1320,13 @@ checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
 name = "parse-display"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "914a1c2265c98e2446911282c6ac86d8524f495792c38c5bd884f80499c7538a"
-dependencies = [
- "parse-display-derive 0.9.1",
- "regex",
- "regex-syntax",
-]
-
-[[package]]
-name = "parse-display"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e78deb158fb1d73b29efb4b7e9b9860b78059c670de06bd28df8d0b458ded0eb"
 dependencies = [
- "parse-display-derive 0.11.0",
+ "parse-display-derive",
  "regex",
  "regex-syntax",
-]
-
-[[package]]
-name = "parse-display-derive"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ae7800a4c974efd12df917266338e79a7a74415173caf7e70aa0a0707345281"
-dependencies = [
- "proc-macro2",
- "quote",
- "regex",
- "regex-syntax",
- "structmeta",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -1489,7 +1464,7 @@ dependencies = [
  "failure",
  "git2",
  "json_comments",
- "parse-display 0.9.1",
+ "parse-display",
  "serde",
  "serde_json",
  "serde_plain",
@@ -2038,7 +2013,7 @@ dependencies = [
  "itertools",
  "log",
  "memchr",
- "parse-display 0.11.0",
+ "parse-display",
  "pin-project-lite",
  "serde",
  "serde_json",
