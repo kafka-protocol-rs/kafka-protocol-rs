@@ -54,7 +54,7 @@ define_copy_impl!(Boolean, bool);
 macro_rules! define_simple_ints {
     ($($name:ident: $t:ty [$put:ident, $get:ident],)*) => (
         $(
-            /// A struct representing [`$ty`]
+            #[doc=concat!("A struct representing [`", stringify!($t), "`]")]
             #[derive(Debug, Copy, Clone)]
             pub struct $name;
 
