@@ -7,7 +7,7 @@ use crate::protocol::buf::{ByteBuf, ByteBufMut};
 use super::{Compressor, Decompressor};
 
 /// Kafka variant of the snappy compression algorithm. See
-/// https://github.com/xerial/snappy-java?tab=readme-ov-file#compatibility-notes for notes about
+/// <https://github.com/xerial/snappy-java?tab=readme-ov-file#compatibility-notes> for notes about
 /// the difference from standard snappy.
 /// See [Kafka's broker configuration](https://kafka.apache.org/documentation/#brokerconfigs_compression.type)
 /// for more information about compression.

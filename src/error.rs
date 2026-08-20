@@ -4,7 +4,7 @@
 pub trait ParseResponseErrorCode {
     /// Convert from an i16 error code to `Option<()>`, if is ok, returns `Some(())`.
     ///
-    /// Convert self into an Option<()>, consuming self, and discarding the error code, if any.
+    /// Convert self into an `Option<()>`, consuming `self`, and discarding the error code, if any.
     ///
     /// ## Examples
     ///
@@ -20,7 +20,7 @@ pub trait ParseResponseErrorCode {
 
     /// Convert from an i16 error code to `Option<ResponseError>`, if is error, returns `Some(ResponseError)`
     ///
-    /// Convert self into an Option<ResponseError>, consuming self, and discarding the success
+    /// Convert self into an `Option<ResponseError>`, consuming `self`, and discarding the success
     /// value, if any.
     ///
     /// ## Examples
@@ -38,7 +38,7 @@ pub trait ParseResponseErrorCode {
     /// ```
     fn err(self) -> Option<ResponseError>;
 
-    /// Returns true if the result is ok.
+    /// Returns `true` if the result is ok.
     ///
     /// ## Examples
     ///
@@ -52,7 +52,7 @@ pub trait ParseResponseErrorCode {
     /// ```
     fn is_ok(&self) -> bool;
 
-    /// Returns true if the result is error.
+    /// Returns `true` if the result is error.
     ///
     /// ## Examples
     ///
