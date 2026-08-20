@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.18.0
+
+### Breaking changes ⚠️
+
+* feat: add KIP-534 Batch attribute `delete_horizon` by @zac-torkelson in https://github.com/kafka-protocol-rs/kafka-protocol-rs/pull/157
+
+### Fixes
+
+* fix: snappy decompress corrupts data when Xerial magic check fails by @StevenLeRoux in https://github.com/kafka-protocol-rs/kafka-protocol-rs/pull/149
+* fix: decode/encode record timestampDelta as VarLong (i64) instead of VarInt (i32) by @hadiezatpanah in https://github.com/ kafka-protocol-rs/kafka-protocol-rs/pull/159
+
+### Features
+
+* Make ResponseError fn const by @allevo in https://github.com/kafka-protocol-rs/kafka-protocol-rs/pull/153
+* Expose batch decode info by @jakubdyszkiewicz in https://github.com/kafka-protocol-rs/kafka-protocol-rs/pull/150
+
 ## 0.17.0
 
 - Breaking change:

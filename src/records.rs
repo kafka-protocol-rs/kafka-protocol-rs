@@ -108,17 +108,35 @@ pub struct RecordBatchEncoder;
 /// Batch decoder for Kafka records.
 pub struct RecordBatchDecoder;
 
-struct BatchDecodeInfo {
-    record_count: usize,
-    timestamp_type: TimestampType,
-    min_offset: i64,
-    min_timestamp: i64,
-    base_sequence: i32,
-    transactional: bool,
-    control: bool,
-    partition_leader_epoch: i32,
-    producer_id: i64,
-    producer_epoch: i16,
+/// Metadata from a record batch header, decoded without decompressing record data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchDecodeInfo {
+    /// Number of records in this batch.
+    pub record_count: i32,
+    /// Indicates whether timestamps represent record creation or log append time.
+    pub timestamp_type: TimestampType,
+    /// Base offset of the batch.
+    pub min_offset: i64,
+    /// Timestamp of the first record in the batch.
+    pub min_timestamp: i64,
+    /// Base sequence number for idempotent producers.
+    pub base_sequence: i32,
+    /// Whether this batch is part of a transaction.
+    pub transactional: bool,
+    /// Whether this batch contains control records.
+    pub control: bool,
+    /// Whether the batch had a delete horizon flag set during compaction.
+    pub delete_horizon: bool,
+    /// Epoch of the partition leader at the time of writing.
+    pub partition_leader_epoch: i32,
+    /// Producer ID for idempotent/transactional producers.
+    pub producer_id: i64,
+    /// Producer epoch for idempotent/transactional producers.
+    pub producer_epoch: i16,
+    /// Compression algorithm used for record data in this batch.
+    pub compression: Compression,
+    /// Record batch format version (magic byte).
+    pub version: i8,
 }
 
 /// Decoded records plus information about compression.
@@ -140,6 +158,8 @@ pub struct Record {
     pub transactional: bool,
     /// Whether this record is a control message, which should not be exposed to the client.
     pub control: bool,
+    /// Whether this record has the delete horizon flag set.
+    pub delete_horizon: bool,
     /// Epoch of the leader for this record 's partition.
     pub partition_leader_epoch: i32,
     /// The identifier of the producer.
@@ -250,6 +270,7 @@ impl RecordBatchEncoder {
             .take_while(|record| {
                 record.transactional == first_record.transactional
                     && record.control == first_record.control
+                    && record.delete_horizon == first_record.delete_horizon
                     && record.partition_leader_epoch == first_record.partition_leader_epoch
                     && record.producer_id == first_record.producer_id
                     && record.producer_epoch == first_record.producer_epoch
@@ -313,6 +334,9 @@ impl RecordBatchEncoder {
         if first_record.control {
             attributes |= 1 << 5;
         }
+        if first_record.delete_horizon {
+            attributes |= 1 << 6;
+        }
         types::Int16.encode(buf, attributes)?;
 
         // Last offset delta
@@ -335,9 +359,7 @@ impl RecordBatchEncoder {
 
         // Record count
         if num_records > i32::MAX as usize {
-            bail!(
-                "Too many records to encode in one batch ({num_records} records)"
-            );
+            bail!("Too many records to encode in one batch ({num_records} records)");
         }
         types::Int32.encode(buf, num_records as i32)?;
 
@@ -382,9 +404,7 @@ impl RecordBatchEncoder {
         // Fill size gap
         let batch_size = batch_end - batch_start;
         if batch_size > i32::MAX as usize {
-            bail!(
-                "Record batch was too large to encode ({batch_size} bytes)"
-            );
+            bail!("Record batch was too large to encode ({batch_size} bytes)");
         }
 
         buf.fill_typed_gap(size_gap, batch_size as i32);
@@ -470,27 +490,41 @@ impl RecordBatchDecoder {
         }?;
         Ok((version, compression))
     }
+    /// Decode batch headers for all record batches in the buffer without decompressing records.
+    ///
+    /// Useful for inspecting metadata (record counts, offsets, producer info, compression) on
+    /// raw `records` bytes from [`FetchResponse`](crate::messages::fetch_response::FetchResponse)
+    /// or [`ProduceRequest`](crate::messages::produce_request::ProduceRequest) partitions.
+    pub fn decode_batch_info<B: ByteBuf>(buf: &mut B) -> Result<Vec<BatchDecodeInfo>> {
+        let mut headers = Vec::new();
+        while buf.has_remaining() {
+            let version = buf.try_peek_bytes(MAGIC_BYTE_OFFSET..(MAGIC_BYTE_OFFSET + 1))?[0] as i8;
+            if version != 2 {
+                break; // legacy message sets not supported
+            }
+            let (header, _records) = Self::decode_batch_header_inner(buf, version)?;
+            headers.push(header);
+        }
+        Ok(headers)
+    }
+
     fn decode_new_records<B: ByteBuf>(
         buf: &mut B,
         batch_decode_info: &BatchDecodeInfo,
         version: i8,
         records: &mut Vec<Record>,
     ) -> Result<()> {
-        records.reserve(batch_decode_info.record_count.min(buf.remaining()));
+        records.reserve((batch_decode_info.record_count as usize).min(buf.remaining()));
         for _ in 0..batch_decode_info.record_count {
             records.push(Record::decode_new(buf, batch_decode_info, version)?);
         }
         Ok(())
     }
-    fn decode_new_batch<B: ByteBuf, F>(
+
+    fn decode_batch_header_inner<B: ByteBuf>(
         buf: &mut B,
         version: i8,
-        records: &mut Vec<Record>,
-        decompress_func: Option<&F>,
-    ) -> Result<Compression>
-    where
-        F: Fn(&mut bytes::Bytes, Compression) -> Result<B>,
-    {
+    ) -> Result<(BatchDecodeInfo, Bytes)> {
         // Base offset
         let min_offset = types::Int64.decode(buf)?;
 
@@ -517,15 +551,14 @@ impl RecordBatchDecoder {
         let actual_crc = crc32c(buf);
 
         if supplied_crc != actual_crc {
-            bail!(
-                "Cyclic redundancy check failed ({supplied_crc} != {actual_crc})"
-            );
+            bail!("Cyclic redundancy check failed ({supplied_crc} != {actual_crc})");
         }
 
         // Attributes
         let attributes: i16 = types::Int16.decode(buf)?;
         let transactional = (attributes & (1 << 4)) != 0;
         let control = (attributes & (1 << 5)) != 0;
+        let delete_horizon = (attributes & (1 << 6)) != 0;
         let compression = match attributes & 0x7 {
             0 => Compression::None,
             1 => Compression::Gzip,
@@ -565,9 +598,8 @@ impl RecordBatchDecoder {
         if record_count < 0 {
             bail!("Unexpected negative record count ({record_count})");
         }
-        let record_count = record_count as usize;
 
-        let batch_decode_info = BatchDecodeInfo {
+        let batch_info = BatchDecodeInfo {
             record_count,
             timestamp_type,
             min_offset,
@@ -575,34 +607,51 @@ impl RecordBatchDecoder {
             base_sequence,
             transactional,
             control,
+            delete_horizon,
             partition_leader_epoch,
             producer_id,
             producer_epoch,
+            compression,
+            version,
         };
 
-        if let Some(decompress_func) = decompress_func {
-            let mut decompressed_buf = decompress_func(buf, compression)?;
+        Ok((batch_info, buf.clone()))
+    }
 
+    fn decode_new_batch<B: ByteBuf, F>(
+        buf: &mut B,
+        version: i8,
+        records: &mut Vec<Record>,
+        decompress_func: Option<&F>,
+    ) -> Result<Compression>
+    where
+        F: Fn(&mut bytes::Bytes, Compression) -> Result<B>,
+    {
+        let (batch_decode_info, mut records_buf) = Self::decode_batch_header_inner(buf, version)?;
+        let compression = batch_decode_info.compression;
+
+        if let Some(decompress_func) = decompress_func {
+            let mut decompressed_buf = decompress_func(&mut records_buf, compression)?;
             Self::decode_new_records(&mut decompressed_buf, &batch_decode_info, version, records)?;
         } else {
             match compression {
-                Compression::None => cmpr::None::decompress(buf, |buf| {
+                Compression::None => cmpr::None::decompress(&mut records_buf, |buf| {
                     Self::decode_new_records(buf, &batch_decode_info, version, records)
                 })?,
                 #[cfg(feature = "snappy")]
-                Compression::Snappy => cmpr::Snappy::decompress(buf, |buf| {
+                Compression::Snappy => cmpr::Snappy::decompress(&mut records_buf, |buf| {
                     Self::decode_new_records(buf, &batch_decode_info, version, records)
                 })?,
                 #[cfg(feature = "gzip")]
-                Compression::Gzip => cmpr::Gzip::decompress(buf, |buf| {
+                Compression::Gzip => cmpr::Gzip::decompress(&mut records_buf, |buf| {
                     Self::decode_new_records(buf, &batch_decode_info, version, records)
                 })?,
                 #[cfg(feature = "zstd")]
-                Compression::Zstd => cmpr::Zstd::decompress(buf, |buf| {
+                Compression::Zstd => cmpr::Zstd::decompress(&mut records_buf, |buf| {
                     Self::decode_new_records(buf, &batch_decode_info, version, records)
                 })?,
                 #[cfg(feature = "lz4")]
-                Compression::Lz4 => cmpr::Lz4::decompress(buf, |buf| {
+                Compression::Lz4 => cmpr::Lz4::decompress(&mut records_buf, |buf| {
                     Self::decode_new_records(buf, &batch_decode_info, version, records)
                 })?,
                 #[allow(unreachable_patterns)]
@@ -638,14 +687,7 @@ impl Record {
 
         // Timestamp delta
         let timestamp_delta = self.timestamp - min_timestamp;
-        if timestamp_delta > i32::MAX as i64 || timestamp_delta < i32::MIN as i64 {
-            bail!(
-                "Timestamps within batch are too far apart ({}, {})",
-                min_timestamp,
-                self.timestamp
-            );
-        }
-        types::VarInt.encode(buf, timestamp_delta as i32)?;
+        types::VarLong.encode(buf, timestamp_delta)?;
 
         // Offset delta
         let offset_delta = self.offset - min_offset;
@@ -728,14 +770,7 @@ impl Record {
 
         // Timestamp delta
         let timestamp_delta = self.timestamp - min_timestamp;
-        if timestamp_delta > i32::MAX as i64 || timestamp_delta < i32::MIN as i64 {
-            bail!(
-                "Timestamps within batch are too far apart ({}, {})",
-                min_timestamp,
-                self.timestamp
-            );
-        }
-        total_size += types::VarInt.compute_size(timestamp_delta as i32)?;
+        total_size += types::VarLong.compute_size(timestamp_delta)?;
 
         // Offset delta
         let offset_delta = self.offset - min_offset;
@@ -823,8 +858,8 @@ impl Record {
         let _attributes: i8 = types::Int8.decode(buf)?;
 
         // Timestamp delta
-        let timestamp_delta: i32 = types::VarInt.decode(buf)?;
-        let timestamp = batch_decode_info.min_timestamp + timestamp_delta as i64;
+        let timestamp_delta: i64 = types::VarLong.decode(buf)?;
+        let timestamp = batch_decode_info.min_timestamp + timestamp_delta;
 
         // Offset delta
         let offset_delta: i32 = types::VarInt.decode(buf)?;
@@ -845,9 +880,7 @@ impl Record {
         let value_len: i32 = types::VarInt.decode(buf)?;
         let value = match value_len.cmp(&-1) {
             Ordering::Less => {
-                bail!(
-                    "Unexpected negative record value length ({value_len} bytes)"
-                );
+                bail!("Unexpected negative record value length ({value_len} bytes)");
             }
             Ordering::Equal => None,
             Ordering::Greater => Some(buf.try_get_bytes(value_len as usize)?),
@@ -865,9 +898,7 @@ impl Record {
             // Key len
             let key_len: i32 = types::VarInt.decode(buf)?;
             if key_len < 0 {
-                bail!(
-                    "Unexpected negative record header key length ({key_len} bytes)"
-                );
+                bail!("Unexpected negative record header key length ({key_len} bytes)");
             }
 
             // Key
@@ -879,9 +910,7 @@ impl Record {
             // Value
             let value = match value_len.cmp(&-1) {
                 Ordering::Less => {
-                    bail!(
-                        "Unexpected negative record header value length ({value_len} bytes)"
-                    );
+                    bail!("Unexpected negative record header value length ({value_len} bytes)");
                 }
                 Ordering::Equal => None,
                 Ordering::Greater => Some(buf.try_get_bytes(value_len as usize)?),
@@ -893,6 +922,7 @@ impl Record {
         Ok(Self {
             transactional: batch_decode_info.transactional,
             control: batch_decode_info.control,
+            delete_horizon: batch_decode_info.delete_horizon,
             timestamp_type: batch_decode_info.timestamp_type,
             partition_leader_epoch: batch_decode_info.partition_leader_epoch,
             producer_id: batch_decode_info.producer_id,
@@ -909,15 +939,77 @@ impl Record {
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
+    use bytes::{Bytes, BytesMut};
 
     use super::*;
+
+    fn make_batch(record_count: usize) -> Bytes {
+        let records: Vec<Record> = (0..record_count as i64)
+            .map(|i| Record {
+                transactional: false,
+                control: false,
+                delete_horizon: false,
+                partition_leader_epoch: NO_PARTITION_LEADER_EPOCH,
+                producer_id: NO_PRODUCER_ID,
+                producer_epoch: NO_PRODUCER_EPOCH,
+                sequence: i as i32,
+                timestamp_type: TimestampType::Creation,
+                offset: i,
+                timestamp: i,
+                key: Some(Bytes::from("k")),
+                value: Some(Bytes::from("v")),
+                headers: Default::default(),
+            })
+            .collect();
+        let mut buf = BytesMut::new();
+        RecordBatchEncoder::encode(
+            &mut buf,
+            &records,
+            &RecordEncodeOptions {
+                version: 2,
+                compression: Compression::None,
+            },
+        )
+        .unwrap();
+        buf.freeze()
+    }
+
+    #[test]
+    fn decode_batch_info_empty() {
+        let mut buf = Bytes::new();
+        assert_eq!(
+            Vec::<BatchDecodeInfo>::new(),
+            RecordBatchDecoder::decode_batch_info(&mut buf).unwrap()
+        );
+    }
+
+    #[test]
+    fn decode_batch_info_single_batch() {
+        let mut buf = make_batch(3);
+        let infos = RecordBatchDecoder::decode_batch_info(&mut buf).unwrap();
+        assert_eq!(1, infos.len());
+        assert_eq!(3, infos[0].record_count);
+        assert_eq!(Compression::None, infos[0].compression);
+    }
+
+    #[test]
+    fn decode_batch_info_two_batches() {
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(&make_batch(2));
+        buf.extend_from_slice(&make_batch(3));
+        let mut buf = buf.freeze();
+        let infos = RecordBatchDecoder::decode_batch_info(&mut buf).unwrap();
+        assert_eq!(2, infos.len());
+        assert_eq!(2, infos[0].record_count);
+        assert_eq!(3, infos[1].record_count);
+    }
 
     #[test]
     fn lookup_header_via_u8_slice() {
         let record = Record {
             transactional: false,
             control: false,
+            delete_horizon: false,
             partition_leader_epoch: 0,
             producer_id: 0,
             producer_epoch: 0,
@@ -950,6 +1042,7 @@ mod tests {
         let record = Record {
             transactional: false,
             control: false,
+            delete_horizon: false,
             partition_leader_epoch: 0,
             producer_id: 0,
             producer_epoch: 0,
@@ -984,9 +1077,12 @@ mod tests {
                 base_sequence: 0,
                 transactional: false,
                 control: false,
+                delete_horizon: false,
                 partition_leader_epoch: 0,
                 producer_id: 0,
                 producer_epoch: 0,
+                compression: Compression::None,
+                version: 2,
             },
             2,
         )
