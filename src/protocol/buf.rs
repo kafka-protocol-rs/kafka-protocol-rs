@@ -146,28 +146,8 @@ macro_rules! define_gap_types {
 }
 
 define_gap_types! {
-    U8 => put_u8(u8),
-    I8 => put_i8(i8),
-    U16 => put_u16(u16),
-    U16Le => put_u16_le(u16),
-    I16 => put_i16(i16),
-    I16Le => put_i16_le(i16),
     U32 => put_u32(u32),
-    U32Le => put_u32_le(u32),
     I32 => put_i32(i32),
-    I32Le => put_i32_le(i32),
-    U64 => put_u64(u64),
-    U64Le => put_u64_le(u64),
-    I64 => put_i64(i64),
-    I64Le => put_i64_le(i64),
-    U128 => put_u128(u128),
-    U128Le => put_u128_le(u128),
-    I128 => put_i128(i128),
-    I128Le => put_i128_le(i128),
-    F32 => put_f32(f32),
-    F32Le => put_f32_le(f32),
-    F64 => put_f64(f64),
-    F64Le => put_f64_le(f64),
 }
 
 /// Extension for working with [`bytes::buf::BufMut`].
