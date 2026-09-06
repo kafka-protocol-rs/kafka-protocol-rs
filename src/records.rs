@@ -40,7 +40,7 @@
 //! ```
 use anyhow::{anyhow, bail, Result};
 use bytes::{Bytes, BytesMut};
-use crc_fast::{checksum, CrcAlgorithm};
+use crc_fast::crc32_iscsi;
 use indexmap::IndexMap;
 
 use crate::protocol::{
@@ -54,9 +54,9 @@ use std::convert::TryFrom;
 
 #[inline]
 /// Kafka record batches use CRC32C (Castagnoli), which maps to
-/// `CrcAlgorithm::Crc32Iscsi` in `crc-fast`.
+/// `crc_fast::crc32_iscsi`.
 fn crc32c(data: &[u8]) -> u32 {
-    checksum(CrcAlgorithm::Crc32Iscsi, data) as u32
+    crc32_iscsi(data)
 }
 
 /// The different types of compression supported by Kafka.
@@ -976,6 +976,22 @@ mod tests {
         )
         .unwrap();
         buf.freeze()
+    }
+
+    #[test]
+    fn crc32c_matches_standard_check_value() {
+        assert_eq!(0xe306_9283, crc32c(b"123456789"));
+    }
+
+    #[test]
+    fn encoded_batch_contains_crc32c_for_batch_content() {
+        let batch = make_batch(1);
+        let crc_start = MAGIC_BYTE_OFFSET + 1;
+        let content_start = crc_start + std::mem::size_of::<u32>();
+        let supplied_crc = u32::from_be_bytes(batch[crc_start..content_start].try_into().unwrap());
+        let expected_crc = crc32c(&batch[content_start..]);
+
+        assert_eq!(expected_crc, supplied_crc);
     }
 
     #[test]
