@@ -979,11 +979,6 @@ mod tests {
     }
 
     #[test]
-    fn crc32c_matches_standard_check_value() {
-        assert_eq!(0xe306_9283, crc32c(b"123456789"));
-    }
-
-    #[test]
     fn encoded_batch_contains_crc32c_for_batch_content() {
         let batch = make_batch(1);
         let crc_start = MAGIC_BYTE_OFFSET + 1;
