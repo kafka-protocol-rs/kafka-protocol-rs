@@ -51,7 +51,6 @@ mod test {
     use bytes::BytesMut;
     use std::fmt::Write;
     use std::str;
-    use zstd::zstd_safe::WriteBuf;
 
     #[test]
     fn test_zstd() {
@@ -63,7 +62,7 @@ mod test {
         .unwrap();
 
         Zstd::decompress(&mut compressed, |buf| -> Result<()> {
-            let decompressed_str = str::from_utf8(buf.as_slice())?;
+            let decompressed_str = str::from_utf8(buf.as_ref())?;
             assert_eq!(decompressed_str, "hello zstd");
             Ok(())
         })
