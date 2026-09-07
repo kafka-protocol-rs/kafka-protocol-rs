@@ -12,6 +12,9 @@
 
 ### Dependency updates
 
+* Update `Cargo.toml` dependency versions: `bytes` 1.12.1, `uuid` 1.26.0, `indexmap` 2.14.2, `snap` 1.1.2, `flate2` 1.1.10, `zstd` 0.14, `lz4` 1.28.1, and `anyhow` 1.0.104
+* Update `protocol_codegen/Cargo.toml` dependency versions: `failure` 0.1.8, `serde` 1.0.229, `serde_json` 1.0.151, `serde_plain` 1.0.2, and `json_comments` 0.2.2
+
 * Replace the direct `crc` and `crc32c` dependencies with `crc-fast` 1.10.0
 
 ## 0.18.0
