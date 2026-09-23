@@ -985,7 +985,21 @@ impl<T, E: Decoder<T>> Decoder<Option<Vec<T>>> for Array<E> {
         match Int32.decode(buf)? {
             -1 => Ok(None),
             n if n >= 0 => {
-                let mut result = Vec::with_capacity(n as usize);
+                // The declared array length came straight off the wire from
+                // an attacker-controlled client. Cap the up-front allocation
+                // by the bytes still available in the buffer: every Kafka
+                // array element occupies at least one byte on the wire, so
+                // a declared length larger than what the reader has left is
+                // never legitimate input. The subsequent `try_reserve_exact`
+                // catches edge cases where the per-element width is large
+                // enough that even a `bytes_remaining`-bounded count would
+                // still exceed the host's address space.
+                let declared = n as usize;
+                let bound = declared.min(buf.remaining());
+                let mut result: Vec<T> = Vec::new();
+                if result.try_reserve_exact(bound).is_err() {
+                    bail!("cannot allocate Kafka array of {declared} elements");
+                }
                 for _ in 0..n {
                     result.push(self.0.decode(buf)?);
                 }
@@ -1093,7 +1107,16 @@ impl<T, E: Decoder<T>> Decoder<Option<Vec<T>>> for CompactArray<E> {
         match UnsignedVarInt.decode(buf)? {
             0 => Ok(None),
             n => {
-                let mut result = Vec::with_capacity((n - 1) as usize);
+                // Same bound-by-remaining rationale as the `Array` impl
+                // above: cap the up-front capacity by the bytes still in
+                // the buffer to keep an attacker-controlled length in the
+                // header from driving a multi-GiB up-front allocation.
+                let declared = (n - 1) as usize;
+                let bound = declared.min(buf.remaining());
+                let mut result: Vec<T> = Vec::new();
+                if result.try_reserve_exact(bound).is_err() {
+                    bail!("cannot allocate Kafka compact array of {declared} elements");
+                }
                 for _ in 1..n {
                     result.push(self.0.decode(buf)?);
                 }
