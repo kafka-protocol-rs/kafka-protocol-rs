@@ -6,7 +6,7 @@
 //! It is unnecessary to interact directly with these types for most use cases.
 use super::{Decodable, Decoder, Encodable, Encoder, NewType, StrBytes};
 use crate::protocol::buf::{ByteBuf, ByteBufMut};
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
 use std::convert::TryFrom;
 use std::string::String as StdString;
 
@@ -985,6 +985,13 @@ impl<T, E: Decoder<T>> Decoder<Option<Vec<T>>> for Array<E> {
         match Int32.decode(buf)? {
             -1 => Ok(None),
             n if n >= 0 => {
+                // Every Kafka array element occupies at least one byte on the wire. Reject an
+                // impossible count before using its untrusted value as an allocation capacity.
+                ensure!(
+                    n as usize <= buf.remaining(),
+                    "Array length ({n}) exceeds the remaining frame size ({})",
+                    buf.remaining()
+                );
                 let mut result = Vec::with_capacity(n as usize);
                 for _ in 0..n {
                     result.push(self.0.decode(buf)?);
@@ -1093,6 +1100,14 @@ impl<T, E: Decoder<T>> Decoder<Option<Vec<T>>> for CompactArray<E> {
         match UnsignedVarInt.decode(buf)? {
             0 => Ok(None),
             n => {
+                // Compact array lengths include the nullable marker, hence the subtraction.
+                // As above, the remaining frame bounds the maximum possible element count.
+                ensure!(
+                    (n - 1) as usize <= buf.remaining(),
+                    "CompactArray length ({}) exceeds the remaining frame size ({})",
+                    n - 1,
+                    buf.remaining()
+                );
                 let mut result = Vec::with_capacity((n - 1) as usize);
                 for _ in 1..n {
                     result.push(self.0.decode(buf)?);
@@ -1194,5 +1209,22 @@ mod tests {
     fn smoke_compact_bytes_encoder_decoder() {
         test_encoder_decoder(CompactBytes, vec![1, 2, 3, 4], &[5, 1, 2, 3, 4]);
         test_encoder_decoder(CompactBytes, None::<Vec<u8>>, &[0]);
+    }
+
+    #[test]
+    fn array_decoders_reject_lengths_larger_than_the_remaining_buffer() {
+        let mut regular: &[u8] = &[0x7f, 0xff, 0xff, 0xff];
+        let regular_result: Result<Vec<i8>> = Array(Int8).decode(&mut regular);
+        assert!(regular_result.is_err());
+
+        let mut compact: &[u8] = &[0xff, 0xff, 0xff, 0xff, 0x0f];
+        let compact_result: Result<Vec<i8>> = CompactArray(Int8).decode(&mut compact);
+        assert!(compact_result.is_err());
+    }
+
+    #[test]
+    fn array_decoders_accept_lengths_that_fit_the_remaining_buffer() {
+        test_encoder_decoder(Array(Int8), vec![1_i8, 2], &[0, 0, 0, 2, 1, 2]);
+        test_encoder_decoder(CompactArray(Int8), vec![1_i8, 2], &[3, 1, 2]);
     }
 }
