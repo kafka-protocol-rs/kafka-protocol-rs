@@ -359,6 +359,12 @@ impl Decoder<Option<StdString>> for String {
         match Int16.decode(buf)? {
             -1 => Ok(None),
             n if n >= 0 => {
+                // The frame bounds the string, so reject an impossible length before allocating.
+                ensure!(
+                    n as usize <= buf.remaining(),
+                    "String length ({n}) exceeds the remaining frame size ({})",
+                    buf.remaining()
+                );
                 let mut strbuf = vec![0; n as usize];
                 buf.try_copy_to_slice(&mut strbuf)?;
                 Ok(Some(std::string::String::from_utf8(strbuf)?))
@@ -511,6 +517,13 @@ impl Decoder<Option<StdString>> for CompactString {
         match UnsignedVarInt.decode(buf)? {
             0 => Ok(None),
             n => {
+                // Compact lengths include the nullable marker, hence the subtraction.
+                ensure!(
+                    (n - 1) as usize <= buf.remaining(),
+                    "CompactString length ({}) exceeds the remaining frame size ({})",
+                    n - 1,
+                    buf.remaining()
+                );
                 let mut strbuf = vec![0; (n - 1) as usize];
                 buf.try_copy_to_slice(&mut strbuf)?;
                 Ok(Some(std::string::String::from_utf8(strbuf)?))
@@ -655,6 +668,12 @@ impl Decoder<Option<Vec<u8>>> for Bytes {
         match Int32.decode(buf)? {
             -1 => Ok(None),
             n if n >= 0 => {
+                // The frame bounds the data, so reject an impossible length before allocating.
+                ensure!(
+                    n as usize <= buf.remaining(),
+                    "Data length ({n}) exceeds the remaining frame size ({})",
+                    buf.remaining()
+                );
                 let mut data = vec![0; n as usize];
                 buf.try_copy_to_slice(&mut data)?;
                 Ok(Some(data))
@@ -804,6 +823,13 @@ impl Decoder<Option<Vec<u8>>> for CompactBytes {
         match UnsignedVarInt.decode(buf)? {
             0 => Ok(None),
             n => {
+                // Compact lengths include the nullable marker, hence the subtraction.
+                ensure!(
+                    (n - 1) as usize <= buf.remaining(),
+                    "Data length ({}) exceeds the remaining frame size ({})",
+                    n - 1,
+                    buf.remaining()
+                );
                 let mut data = vec![0; (n - 1) as usize];
                 buf.try_copy_to_slice(&mut data)?;
                 Ok(Some(data))
@@ -1226,5 +1252,34 @@ mod tests {
     fn array_decoders_accept_lengths_that_fit_the_remaining_buffer() {
         test_encoder_decoder(Array(Int8), vec![1_i8, 2], &[0, 0, 0, 2, 1, 2]);
         test_encoder_decoder(CompactArray(Int8), vec![1_i8, 2], &[3, 1, 2]);
+    }
+
+    #[test]
+    fn string_and_bytes_decoders_reject_lengths_larger_than_the_remaining_buffer() {
+        fn assert_rejected<T>(result: Result<T>) {
+            match result {
+                Ok(_) => panic!("an impossible length must be rejected before allocating"),
+                Err(err) => assert!(
+                    err.to_string().contains("exceeds the remaining frame size"),
+                    "unexpected decode error: {err}"
+                ),
+            }
+        }
+
+        let mut string: &[u8] = &[0x7f, 0xff];
+        let string_result: Result<StdString> = String.decode(&mut string);
+        assert_rejected(string_result);
+
+        let mut compact_string: &[u8] = &[0xff, 0xff, 0xff, 0xff, 0x0f];
+        let compact_string_result: Result<StdString> = CompactString.decode(&mut compact_string);
+        assert_rejected(compact_string_result);
+
+        let mut bytes: &[u8] = &[0x7f, 0xff, 0xff, 0xff];
+        let bytes_result: Result<Vec<u8>> = Bytes.decode(&mut bytes);
+        assert_rejected(bytes_result);
+
+        let mut compact_bytes: &[u8] = &[0xff, 0xff, 0xff, 0xff, 0x0f];
+        let compact_bytes_result: Result<Vec<u8>> = CompactBytes.decode(&mut compact_bytes);
+        assert_rejected(compact_bytes_result);
     }
 }
