@@ -359,7 +359,6 @@ impl Decoder<Option<StdString>> for String {
         match Int16.decode(buf)? {
             -1 => Ok(None),
             n if n >= 0 => {
-                // The frame bounds the string, so reject an impossible length before allocating.
                 ensure!(
                     n as usize <= buf.remaining(),
                     "String length ({n}) exceeds the remaining frame size ({})",
@@ -517,14 +516,14 @@ impl Decoder<Option<StdString>> for CompactString {
         match UnsignedVarInt.decode(buf)? {
             0 => Ok(None),
             n => {
-                // Compact lengths include the nullable marker, hence the subtraction.
+                let str_len = (n - 1) as usize;
                 ensure!(
-                    (n - 1) as usize <= buf.remaining(),
+                    str_len <= buf.remaining(),
                     "CompactString length ({}) exceeds the remaining frame size ({})",
-                    n - 1,
+                    str_len,
                     buf.remaining()
                 );
-                let mut strbuf = vec![0; (n - 1) as usize];
+                let mut strbuf = vec![0; str_len];
                 buf.try_copy_to_slice(&mut strbuf)?;
                 Ok(Some(std::string::String::from_utf8(strbuf)?))
             }
@@ -668,7 +667,6 @@ impl Decoder<Option<Vec<u8>>> for Bytes {
         match Int32.decode(buf)? {
             -1 => Ok(None),
             n if n >= 0 => {
-                // The frame bounds the data, so reject an impossible length before allocating.
                 ensure!(
                     n as usize <= buf.remaining(),
                     "Data length ({n}) exceeds the remaining frame size ({})",
@@ -823,14 +821,14 @@ impl Decoder<Option<Vec<u8>>> for CompactBytes {
         match UnsignedVarInt.decode(buf)? {
             0 => Ok(None),
             n => {
-                // Compact lengths include the nullable marker, hence the subtraction.
+                let str_len = (n - 1) as usize;
                 ensure!(
-                    (n - 1) as usize <= buf.remaining(),
+                    str_len <= buf.remaining(),
                     "Data length ({}) exceeds the remaining frame size ({})",
-                    n - 1,
+                    str_len,
                     buf.remaining()
                 );
-                let mut data = vec![0; (n - 1) as usize];
+                let mut data = vec![0; str_len];
                 buf.try_copy_to_slice(&mut data)?;
                 Ok(Some(data))
             }
