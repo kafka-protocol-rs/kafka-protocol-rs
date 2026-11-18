@@ -2,9 +2,11 @@ use crate::protocol::buf::{ByteBuf, ByteBufMut};
 use anyhow::{Context, Result};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use super::{Compressor, Decompressor};
+use super::bounded::BoundedWriter;
+use super::{BoundedDecompressor, Compressor, Decompressor};
+use crate::records::DecodeBudget;
 
-/// Gzip compression algorithm. See [Kafka's broker configuration](https://kafka.apache.org/documentation/#brokerconfigs_compression.type)
+/// Zstd compression algorithm. See [Kafka's broker configuration](https://kafka.apache.org/documentation/#brokerconfigs_compression.type)
 /// for more information.
 pub struct Zstd;
 
@@ -29,17 +31,30 @@ impl<B: ByteBufMut> Compressor<B> for Zstd {
 
 impl<B: ByteBuf> Decompressor<B> for Zstd {
     type Buf = Bytes;
-
     fn decompress<R, F>(buf: &mut B, f: F) -> Result<R>
     where
         F: FnOnce(&mut Self::Buf) -> Result<R>,
     {
-        let mut tmp = BytesMut::new().writer();
-        // Allocate a temporary buffer to hold the uncompressed bytes
-        let buf = buf.copy_to_bytes(buf.remaining());
-        zstd::stream::copy_decode(buf.reader(), &mut tmp).context("Failed to decompress zstd")?;
+        Self::decompress_with_budget(buf, &mut DecodeBudget::default(), |decoded, _| f(decoded))
+    }
+}
 
-        f(&mut tmp.into_inner().into())
+impl<B: ByteBuf> BoundedDecompressor<B> for Zstd {
+    fn decompress_with_budget<R, F>(buf: &mut B, budget: &mut DecodeBudget, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut Self::Buf, &mut DecodeBudget) -> Result<R>,
+    {
+        budget.check()?;
+        let input = buf.copy_to_bytes(buf.remaining());
+        let mut decoder = zstd::stream::read::Decoder::new(input.reader())
+            .context("Failed to create zstd decoder")?;
+        decoder
+            .window_log_max(budget.limits().zstd_window_log_max)
+            .context("Failed to configure zstd window limit")?;
+        let mut output = BoundedWriter::new(budget)?;
+        let result = std::io::copy(&mut decoder, &mut output).map(|_| ());
+        let mut decoded = output.finish(result).context("Failed to decompress zstd")?;
+        f(&mut decoded, budget)
     }
 }
 

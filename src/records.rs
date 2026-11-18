@@ -38,6 +38,9 @@
 //!         }
 //!  }
 //! ```
+mod budget;
+pub use budget::{DecodeBudget, DecodeLimitExceeded, DecodeLimits, DecodeResource};
+
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use bytes::{Buf, Bytes, BytesMut};
 use crc_fast::crc32_iscsi;

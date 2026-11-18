@@ -5,6 +5,9 @@
 ### Breaking changes ⚠️
 
 * Remove the public `records::IEEE` CRC helper
+* Built-in decompressors now limit decoded output to 128 MiB per call by default.
+  Use `BoundedDecompressor` with a `DecodeBudget` to configure or share limits.
+  Zstandard also has an independent configurable history-window limit (default: 128 MiB).
 
 ### Features
 
