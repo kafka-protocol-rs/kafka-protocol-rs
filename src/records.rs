@@ -4,6 +4,52 @@
 //! contain records in a raw format, allowing the user to implement their own logic for interacting
 //! with those values.
 //!
+//! # Decode limits
+//!
+//! Built-in record decoding uses a fresh [`DecodeBudget`] per public call:
+//! 128 MiB of record-data bytes, 1,000,000 records, 1,000,000 header entries,
+//! and 4,096 batches. `decode_all` shares these limits across its entire result.
+//! Uncompressed batches count too. Duplicate header keys consume separate entries.
+//! Counts are charged from validated declarations before parsing their contents;
+//! failed decoding does not refund those charges. A limit violation makes the
+//! budget unusable, and returns a downcastable [`DecodeLimitExceeded`].
+//!
+//! Select limits appropriate for the workload, and share a budget across calls
+//! that retain results together, for example all partitions of a ProduceRequest:
+//!
+//! ```
+//! use bytes::Bytes;
+//! use kafka_protocol::records::{DecodeBudget, DecodeLimits, RecordBatchDecoder};
+//!
+//! # fn decode_partitions(partitions: Vec<Bytes>) -> anyhow::Result<()> {
+//! let mut budget = DecodeBudget::new(DecodeLimits {
+//!     decoded_bytes: 32 * 1024 * 1024,
+//!     records: 100_000,
+//!     ..DecodeLimits::default()
+//! });
+//! for mut partition in partitions {
+//!     let batches = RecordBatchDecoder::decode_all_with_budget(&mut partition, &mut budget)?;
+//!     // Process or retain batches. Dropping them does not refund the budget.
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! [`DecodeBudget::unlimited`] explicitly removes byte/count policies for trusted
+//! workloads. The Zstandard history limit remains independent (default window log
+//! 27, nominally 128 MiB); reducing it can reject valid producer frames even when
+//! decoded output fits the byte budget. Built-in low-level decompressors also use
+//! a default byte budget; [`BoundedDecompressor`] accepts a caller-selected budget.
+//!
+//! These are operation limits, not an RSS or CPU deadline guarantee. Retained
+//! input, buffer capacity, collection overhead, and native codec scratch/history
+//! require additional memory. Callers must bound input framing and concurrent
+//! work, and apply decoding policies on ingestion and background read paths.
+//! When lowering limits, account for existing stored batches. Custom callbacks
+//! passed to `decode_with_custom_compression(_, Some(...))` remain trusted and
+//! bypass default policies. Header-only `decode_batch_info` does not decompress
+//! and is outside this budget API.
+//!
 //! # Example
 //!
 //! Decoding a set of records from a [`FetchResponse`](crate::messages::fetch_response::FetchResponse):
@@ -51,7 +97,7 @@ use crate::protocol::{
     types, Decoder, Encoder, StrBytes,
 };
 
-use super::compression::{self as cmpr, Compressor, Decompressor};
+use super::compression::{self as cmpr, BoundedDecompressor, Compressor};
 use std::cmp::Ordering;
 use std::convert::TryFrom;
 
@@ -451,11 +497,12 @@ fn reserve_next<T>(items: &mut Vec<T>, total: usize) -> Result<()> {
 }
 
 impl RecordBatchDecoder {
-    /// Decode one RecordSet from the provided buffer.
-    /// # Arguments
-    /// * `decompressor` - A function that decompresses the given batch of records.
+    /// Decode one RecordSet, optionally using a trusted custom decompressor.
     ///
-    /// If `None`, the right decompression algorithm will automatically be selected and applied.
+    /// With `None`, applies a fresh default [`DecodeBudget`]. With `Some`, the
+    /// callback and its decoded result bypass the default resource policies;
+    /// callers are responsible for bounding allocations and collection counts.
+    /// Custom codecs can reuse [`BoundedDecompressor`] implementations.
     pub fn decode_with_custom_compression<B: ByteBuf, F>(
         buf: &mut B,
         decompressor: Option<F>,
@@ -463,9 +510,16 @@ impl RecordBatchDecoder {
     where
         F: Fn(&mut bytes::Bytes, Compression) -> Result<B>,
     {
+        let Some(decompressor) = decompressor else {
+            return Self::decode_with_budget(buf, &mut DecodeBudget::default());
+        };
         let mut records = Vec::new();
-        let (version, compression) =
-            Self::decode_into_vec(buf, &mut records, decompressor.as_ref())?;
+        let (version, compression) = Self::decode_into_vec(
+            buf,
+            &mut records,
+            Some(&decompressor),
+            &mut DecodeBudget::unlimited(),
+        )?;
         Ok(RecordSet {
             version,
             compression,
@@ -473,35 +527,71 @@ impl RecordBatchDecoder {
         })
     }
 
-    /// Decode the entire buffer into a vec of RecordSets.
+    /// Decode the entire buffer using one default budget across all batches.
     pub fn decode_all<B: ByteBuf>(buf: &mut B) -> Result<Vec<RecordSet>> {
+        Self::decode_all_with_budget(buf, &mut DecodeBudget::default())
+    }
+
+    /// Decode the entire buffer, charging all batches to the supplied budget.
+    ///
+    /// The budget can also be shared across calls, for example across partitions
+    /// in one ProduceRequest. Charges survive errors and dropping the results.
+    pub fn decode_all_with_budget<B: ByteBuf>(
+        buf: &mut B,
+        budget: &mut DecodeBudget,
+    ) -> Result<Vec<RecordSet>> {
+        budget.check()?;
         let mut batches = Vec::new();
         while buf.has_remaining() {
-            batches.push(Self::decode(buf)?);
+            let batch = Self::decode_with_budget(buf, budget)?;
+            reserve_next(&mut batches, budget.limits().batches)?;
+            batches.push(batch);
         }
         Ok(batches)
     }
 
-    /// Decode one RecordSet from the provided buffer.
+    /// Decode one RecordSet using a fresh default [`DecodeBudget`].
     pub fn decode<B: ByteBuf>(buf: &mut B) -> Result<RecordSet> {
-        Self::decode_with_custom_compression(
+        Self::decode_with_budget(buf, &mut DecodeBudget::default())
+    }
+
+    /// Decode one RecordSet within a caller-selected resource scope.
+    ///
+    /// Charges decoded bytes (including uncompressed input), records, headers,
+    /// and batches before their corresponding allocations. Limit failures can be
+    /// identified by downcasting to [`DecodeLimitExceeded`].
+    pub fn decode_with_budget<B: ByteBuf>(
+        buf: &mut B,
+        budget: &mut DecodeBudget,
+    ) -> Result<RecordSet> {
+        let mut records = Vec::new();
+        let (version, compression) = Self::decode_into_vec(
             buf,
-            None::<fn(&mut bytes::Bytes, Compression) -> Result<B>>.as_ref(),
-        )
+            &mut records,
+            None::<&fn(&mut Bytes, Compression) -> Result<B>>,
+            budget,
+        )?;
+        Ok(RecordSet {
+            version,
+            compression,
+            records,
+        })
     }
 
     fn decode_into_vec<B: ByteBuf, F>(
         buf: &mut B,
         records: &mut Vec<Record>,
         decompress_func: Option<&F>,
+        budget: &mut DecodeBudget,
     ) -> Result<(i8, Compression)>
     where
         F: Fn(&mut bytes::Bytes, Compression) -> Result<B>,
     {
+        budget.charge(DecodeResource::Batches, 1)?;
         let version = buf.try_peek_bytes(MAGIC_BYTE_OFFSET..(MAGIC_BYTE_OFFSET + 1))?[0] as i8;
         let compression = match version {
             0..=1 => bail!("message sets v{version} are unsupported"),
-            2 => Self::decode_new_batch(buf, version, records, decompress_func),
+            2 => Self::decode_new_batch(buf, version, records, decompress_func, budget),
             _ => {
                 bail!("Unknown record batch version ({version})");
             }
@@ -531,6 +621,7 @@ impl RecordBatchDecoder {
         batch_decode_info: &BatchDecodeInfo,
         version: i8,
         records: &mut Vec<Record>,
+        budget: &mut DecodeBudget,
     ) -> Result<()> {
         let count = batch_decode_info.record_count as usize;
         // A v2 record needs at least a length prefix and six one-byte fields.
@@ -540,7 +631,7 @@ impl RecordBatchDecoder {
             buf.remaining()
         );
         for _ in 0..count {
-            let record = Record::decode_new(buf, batch_decode_info, version)?;
+            let record = Record::decode_new(buf, batch_decode_info, version, budget)?;
             reserve_next(records, count)?;
             records.push(record);
         }
@@ -649,37 +740,61 @@ impl RecordBatchDecoder {
         version: i8,
         records: &mut Vec<Record>,
         decompress_func: Option<&F>,
+        budget: &mut DecodeBudget,
     ) -> Result<Compression>
     where
         F: Fn(&mut bytes::Bytes, Compression) -> Result<B>,
     {
         let (batch_decode_info, mut records_buf) = Self::decode_batch_header_inner(buf, version)?;
         let compression = batch_decode_info.compression;
+        budget.charge(
+            DecodeResource::Records,
+            batch_decode_info.record_count as usize,
+        )?;
 
         if let Some(decompress_func) = decompress_func {
             let mut decompressed_buf = decompress_func(&mut records_buf, compression)?;
-            Self::decode_new_records(&mut decompressed_buf, &batch_decode_info, version, records)?;
+            budget.charge(DecodeResource::DecodedBytes, decompressed_buf.remaining())?;
+            Self::decode_new_records(
+                &mut decompressed_buf,
+                &batch_decode_info,
+                version,
+                records,
+                budget,
+            )?;
         } else {
             match compression {
-                Compression::None => cmpr::None::decompress(&mut records_buf, |buf| {
-                    Self::decode_new_records(buf, &batch_decode_info, version, records)
-                })?,
+                Compression::None => {
+                    cmpr::None::decompress_with_budget(&mut records_buf, budget, |buf, budget| {
+                        Self::decode_new_records(buf, &batch_decode_info, version, records, budget)
+                    })?
+                }
                 #[cfg(feature = "snappy")]
-                Compression::Snappy => cmpr::Snappy::decompress(&mut records_buf, |buf| {
-                    Self::decode_new_records(buf, &batch_decode_info, version, records)
-                })?,
+                Compression::Snappy => cmpr::Snappy::decompress_with_budget(
+                    &mut records_buf,
+                    budget,
+                    |buf, budget| {
+                        Self::decode_new_records(buf, &batch_decode_info, version, records, budget)
+                    },
+                )?,
                 #[cfg(feature = "gzip")]
-                Compression::Gzip => cmpr::Gzip::decompress(&mut records_buf, |buf| {
-                    Self::decode_new_records(buf, &batch_decode_info, version, records)
-                })?,
+                Compression::Gzip => {
+                    cmpr::Gzip::decompress_with_budget(&mut records_buf, budget, |buf, budget| {
+                        Self::decode_new_records(buf, &batch_decode_info, version, records, budget)
+                    })?
+                }
                 #[cfg(feature = "zstd")]
-                Compression::Zstd => cmpr::Zstd::decompress(&mut records_buf, |buf| {
-                    Self::decode_new_records(buf, &batch_decode_info, version, records)
-                })?,
+                Compression::Zstd => {
+                    cmpr::Zstd::decompress_with_budget(&mut records_buf, budget, |buf, budget| {
+                        Self::decode_new_records(buf, &batch_decode_info, version, records, budget)
+                    })?
+                }
                 #[cfg(feature = "lz4")]
-                Compression::Lz4 => cmpr::Lz4::decompress(&mut records_buf, |buf| {
-                    Self::decode_new_records(buf, &batch_decode_info, version, records)
-                })?,
+                Compression::Lz4 => {
+                    cmpr::Lz4::decompress_with_budget(&mut records_buf, budget, |buf, budget| {
+                        Self::decode_new_records(buf, &batch_decode_info, version, records, budget)
+                    })?
+                }
                 #[allow(unreachable_patterns)]
                 c => {
                     return Err(anyhow!(
@@ -870,6 +985,7 @@ impl Record {
         buf: &mut B,
         batch_decode_info: &BatchDecodeInfo,
         _version: i8,
+        budget: &mut DecodeBudget,
     ) -> Result<Self> {
         // Size
         let size: i32 = types::VarInt.decode(buf)?;
@@ -926,6 +1042,7 @@ impl Record {
             buf.remaining()
         );
 
+        budget.charge(DecodeResource::Headers, num_headers)?;
         let mut headers = IndexMap::new();
         for _ in 0..num_headers {
             // Key len
@@ -1013,6 +1130,244 @@ mod tests {
         buf.freeze()
     }
 
+    fn batch_with_record_data(data: &[u8], count: i32) -> Bytes {
+        let mut batch = make_batch(1).to_vec();
+        batch.truncate(61);
+        batch.extend_from_slice(data);
+        let batch_length = (batch.len() - 12) as i32;
+        batch[8..12].copy_from_slice(&batch_length.to_be_bytes());
+        batch[57..61].copy_from_slice(&count.to_be_bytes());
+        let crc = crc32c(&batch[21..]);
+        batch[17..21].copy_from_slice(&crc.to_be_bytes());
+        batch.into()
+    }
+
+    fn codecs() -> Vec<Compression> {
+        vec![
+            Compression::None,
+            #[cfg(feature = "gzip")]
+            Compression::Gzip,
+            #[cfg(feature = "snappy")]
+            Compression::Snappy,
+            #[cfg(feature = "lz4")]
+            Compression::Lz4,
+            #[cfg(feature = "zstd")]
+            Compression::Zstd,
+        ]
+    }
+
+    #[test]
+    fn decode_budgets_cover_every_codec_and_all_calls() {
+        let original = make_batch(3);
+        let decoded_bytes = original.len() - 61;
+        let records = RecordBatchDecoder::decode(&mut original.clone())
+            .unwrap()
+            .records;
+        for codec in codecs() {
+            let mut batch = BytesMut::new();
+            RecordBatchEncoder::encode(
+                &mut batch,
+                &records,
+                &RecordEncodeOptions {
+                    version: 2,
+                    compression: codec,
+                },
+            )
+            .unwrap();
+            let batch = batch.freeze();
+            let mut budget = DecodeBudget::new(DecodeLimits {
+                decoded_bytes,
+                ..DecodeLimits::default()
+            });
+            assert_eq!(
+                RecordBatchDecoder::decode_with_budget(&mut batch.clone(), &mut budget)
+                    .unwrap()
+                    .records
+                    .len(),
+                3
+            );
+            assert_eq!(budget.consumed(DecodeResource::DecodedBytes), decoded_bytes);
+            let error = RecordBatchDecoder::decode_with_budget(&mut batch.clone(), &mut budget)
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<DecodeLimitExceeded>()
+                    .unwrap()
+                    .resource,
+                DecodeResource::DecodedBytes
+            );
+
+            let combined = Bytes::from([batch.as_ref(), batch.as_ref()].concat());
+            let mut budget = DecodeBudget::new(DecodeLimits {
+                decoded_bytes: 2 * decoded_bytes,
+                records: 6,
+                batches: 2,
+                ..DecodeLimits::default()
+            });
+            assert_eq!(
+                RecordBatchDecoder::decode_all_with_budget(&mut combined.clone(), &mut budget)
+                    .unwrap()
+                    .len(),
+                2
+            );
+            let mut budget = DecodeBudget::new(DecodeLimits {
+                decoded_bytes: 2 * decoded_bytes - 1,
+                ..DecodeLimits::default()
+            });
+            assert!(
+                RecordBatchDecoder::decode_all_with_budget(&mut combined.clone(), &mut budget)
+                    .unwrap_err()
+                    .is::<DecodeLimitExceeded>()
+            );
+        }
+    }
+
+    #[test]
+    fn record_limit_is_checked_before_decompression() {
+        // Zero byte allowance would fail if decompression started first.
+        let mut budget = DecodeBudget::new(DecodeLimits {
+            decoded_bytes: 0,
+            records: 1,
+            ..DecodeLimits::default()
+        });
+        let error =
+            RecordBatchDecoder::decode_with_budget(&mut make_batch(2), &mut budget).unwrap_err();
+        let error = error.downcast_ref::<DecodeLimitExceeded>().unwrap();
+        assert_eq!(error.resource, DecodeResource::Records);
+        assert_eq!(error.requested, 2);
+        assert_eq!(budget.consumed(DecodeResource::DecodedBytes), 0);
+    }
+
+    #[test]
+    fn record_limit_is_shared_across_calls() {
+        let mut budget = DecodeBudget::new(DecodeLimits {
+            records: 3,
+            ..DecodeLimits::default()
+        });
+        RecordBatchDecoder::decode_with_budget(&mut make_batch(2), &mut budget).unwrap();
+        RecordBatchDecoder::decode_with_budget(&mut make_batch(1), &mut budget).unwrap();
+        let error =
+            RecordBatchDecoder::decode_with_budget(&mut make_batch(1), &mut budget).unwrap_err();
+        let error = error.downcast_ref::<DecodeLimitExceeded>().unwrap();
+        assert_eq!(error.resource, DecodeResource::Records);
+        assert_eq!(error.consumed, 3);
+    }
+
+    #[test]
+    fn header_budget_counts_duplicate_keys_and_is_shared() {
+        // Two empty-key headers collapse to one IndexMap entry.
+        let batch = batch_with_record_data(&[20, 0, 0, 0, 1, 1, 4, 0, 1, 0, 1], 1);
+        for allowed in [0, 1, 2] {
+            let mut budget = DecodeBudget::new(DecodeLimits {
+                headers: allowed,
+                ..DecodeLimits::default()
+            });
+            let result = RecordBatchDecoder::decode_with_budget(&mut batch.clone(), &mut budget);
+            if allowed < 2 {
+                assert_eq!(
+                    result
+                        .unwrap_err()
+                        .downcast_ref::<DecodeLimitExceeded>()
+                        .unwrap()
+                        .resource,
+                    DecodeResource::Headers
+                );
+            } else {
+                assert_eq!(result.unwrap().records[0].headers.len(), 1);
+                assert_eq!(budget.consumed(DecodeResource::Headers), 2);
+                assert!(
+                    RecordBatchDecoder::decode_with_budget(&mut batch.clone(), &mut budget)
+                        .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_batches_consume_batch_allowance() {
+        let batch = batch_with_record_data(&[], 0);
+        let mut budget = DecodeBudget::new(DecodeLimits {
+            decoded_bytes: 0,
+            records: 0,
+            headers: 0,
+            batches: 1,
+            ..DecodeLimits::default()
+        });
+        assert!(
+            RecordBatchDecoder::decode_with_budget(&mut batch.clone(), &mut budget)
+                .unwrap()
+                .records
+                .is_empty()
+        );
+        let mut input = batch.clone();
+        let error = RecordBatchDecoder::decode_with_budget(&mut input, &mut budget).unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<DecodeLimitExceeded>()
+                .unwrap()
+                .resource,
+            DecodeResource::Batches
+        );
+        assert_eq!(input, batch);
+        assert!(
+            RecordBatchDecoder::decode_all_with_budget(&mut Bytes::new(), &mut budget).is_err()
+        );
+    }
+
+    #[test]
+    fn default_decode_all_uses_one_budget() {
+        let empty = batch_with_record_data(&[], 0);
+        let mut input = Bytes::from(empty.repeat(DecodeLimits::default().batches + 1));
+        let error = RecordBatchDecoder::decode_all(&mut input).unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<DecodeLimitExceeded>()
+                .unwrap()
+                .resource,
+            DecodeResource::Batches
+        );
+        assert_eq!(input, empty);
+    }
+
+    #[test]
+    fn parse_errors_do_not_refund_or_poison_budget() {
+        let mut budget = DecodeBudget::new(DecodeLimits {
+            decoded_bytes: 14,
+            records: 2,
+            batches: 2,
+            ..DecodeLimits::default()
+        });
+        let mut malformed = batch_with_record_data(&[12, 0, 0, 0, 1, 1, 1], 1); // negative header count
+        let error =
+            RecordBatchDecoder::decode_with_budget(&mut malformed, &mut budget).unwrap_err();
+        assert!(!error.is::<DecodeLimitExceeded>());
+        assert_eq!(budget.consumed(DecodeResource::DecodedBytes), 7);
+        assert_eq!(budget.consumed(DecodeResource::Records), 1);
+        assert_eq!(budget.consumed(DecodeResource::Batches), 1);
+        let mut valid = batch_with_record_data(&[12, 0, 0, 0, 1, 1, 0], 1);
+        RecordBatchDecoder::decode_with_budget(&mut valid, &mut budget).unwrap();
+        assert_eq!(budget.remaining(DecodeResource::DecodedBytes), 0);
+    }
+
+    #[test]
+    fn trusted_custom_callback_and_automatic_selection_work() {
+        let original = make_batch(1);
+        let custom = RecordBatchDecoder::decode_with_custom_compression(
+            &mut original.clone(),
+            Some(|input: &mut Bytes, codec| {
+                assert_eq!(codec, Compression::None);
+                Ok(input.clone())
+            }),
+        )
+        .unwrap();
+        let automatic = RecordBatchDecoder::decode_with_custom_compression(
+            &mut original.clone(),
+            None::<fn(&mut Bytes, Compression) -> Result<Bytes>>,
+        )
+        .unwrap();
+        assert_eq!(custom.records, automatic.records);
+    }
+
     #[test]
     fn encoded_batch_contains_crc32c_for_batch_content() {
         let batch = make_batch(1);
@@ -1030,9 +1385,34 @@ mod tests {
             RecordBatchDecoder::decode_batch_header_inner(&mut make_batch(1), 2).unwrap();
         info.record_count = 1000;
         let mut records = Vec::new();
-        let error =
-            RecordBatchDecoder::decode_new_records(&mut data, &info, 2, &mut records).unwrap_err();
+        let error = RecordBatchDecoder::decode_new_records(
+            &mut data,
+            &info,
+            2,
+            &mut records,
+            &mut DecodeBudget::unlimited(),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("Record count"));
+        assert_eq!(records.capacity(), 0);
+    }
+
+    #[test]
+    fn plausible_record_count_does_not_reserve_before_parsing() {
+        let (mut info, _) =
+            RecordBatchDecoder::decode_batch_header_inner(&mut make_batch(1), 2).unwrap();
+        info.record_count = 100;
+        // Sufficient bytes for the count, but the first record body is empty.
+        let mut data = Bytes::from(vec![0; 700]);
+        let mut records = Vec::new();
+        assert!(RecordBatchDecoder::decode_new_records(
+            &mut data,
+            &info,
+            2,
+            &mut records,
+            &mut DecodeBudget::unlimited()
+        )
+        .is_err());
         assert_eq!(records.capacity(), 0);
     }
 
@@ -1042,13 +1422,20 @@ mod tests {
             RecordBatchDecoder::decode_batch_header_inner(&mut make_batch(1), 2).unwrap();
         let mut records = Vec::new();
         let mut data: &[u8] = &[12, 0, 0, 0, 1, 1, 0];
-        RecordBatchDecoder::decode_new_records(&mut data, &info, 2, &mut records).unwrap();
+        RecordBatchDecoder::decode_new_records(
+            &mut data,
+            &info,
+            2,
+            &mut records,
+            &mut DecodeBudget::unlimited(),
+        )
+        .unwrap();
         assert_eq!(records.len(), 1);
 
         // One empty-key, null-value header occupies exactly two bytes.
         let mut data: &[u8] = &[16, 0, 0, 0, 1, 1, 2, 0, 1];
         assert_eq!(
-            Record::decode_new(&mut data, &info, 2)
+            Record::decode_new(&mut data, &info, 2, &mut DecodeBudget::unlimited())
                 .unwrap()
                 .headers
                 .len(),
@@ -1056,10 +1443,12 @@ mod tests {
         );
         // Only one byte remains for a claimed header.
         let mut data: &[u8] = &[14, 0, 0, 0, 1, 1, 2, 0];
-        assert!(Record::decode_new(&mut data, &info, 2)
-            .unwrap_err()
-            .to_string()
-            .contains("header count"));
+        assert!(
+            Record::decode_new(&mut data, &info, 2, &mut DecodeBudget::unlimited())
+                .unwrap_err()
+                .to_string()
+                .contains("header count")
+        );
     }
 
     #[test]
@@ -1148,6 +1537,7 @@ mod tests {
                 version: 2,
             },
             2,
+            &mut DecodeBudget::unlimited(),
         );
         assert!(result.is_err());
     }
@@ -1200,6 +1590,7 @@ mod tests {
                 version: 2,
             },
             2,
+            &mut DecodeBudget::unlimited(),
         )
         .expect("decode works");
     }
