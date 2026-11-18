@@ -46,7 +46,7 @@ jobs:
           toolchain: stable
           components: clippy
       - name: Install cargo-hack
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-hack@0.6.31
       - run: cargo hack --feature-powerset clippy --all-targets --locked -- -D warnings
