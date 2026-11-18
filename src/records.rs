@@ -896,11 +896,12 @@ impl Record {
             bail!("Unexpected negative record header count: {num_headers}");
         }
         let num_headers = num_headers as usize;
-        // Every header occupies at least one byte on the wire. Reject an impossible count
-        // before using its untrusted value as an allocation capacity.
+        // Every header occupies at least two bytes on the wire: its key length and value length
+        // VarInts. Reject an impossible count before using its untrusted value as an allocation
+        // capacity.
         ensure!(
-            num_headers <= buf.remaining(),
-            "Record header count ({num_headers}) exceeds the remaining record size ({})",
+            num_headers <= buf.remaining() / 2,
+            "Record header count ({num_headers}) exceeds what the remaining record size ({}) can hold",
             buf.remaining()
         );
 
