@@ -38,7 +38,7 @@ impl<'a> BoundedWriter<'a> {
         let needed = self.output.len() + buf.len();
         if needed > self.output.capacity() {
             let capacity = needed
-                .max(self.output.capacity().saturating_mul(2).max(8192))
+                .max(self.output.capacity().saturating_mul(2))
                 .min(self.capacity_limit);
             self.output
                 .try_reserve_exact(capacity - self.output.len())
@@ -74,6 +74,18 @@ impl Write for BoundedWriter<'_> {
 mod tests {
     use super::*;
     use crate::records::{DecodeLimitExceeded, DecodeLimits};
+
+    #[test]
+    fn tiny_outputs_do_not_retain_a_full_io_buffer() {
+        let mut budget = DecodeBudget::default();
+        let mut writer = BoundedWriter::new(&mut budget).unwrap();
+        writer.write_all(b"a").unwrap();
+        assert_eq!(writer.output.capacity(), 1);
+        for _ in 0..10 {
+            writer.write_all(b"b").unwrap();
+            assert!(writer.output.capacity() < 2 * writer.output.len());
+        }
+    }
 
     #[test]
     fn capacity_is_capped_and_failure_survives_cleanup() {

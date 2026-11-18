@@ -7,7 +7,7 @@ pub enum DecodeResource {
     DecodedBytes,
     /// Records declared by batches being decoded.
     Records,
-    /// Header entries processed, including duplicate keys.
+    /// Header entries declared by records, including duplicate keys.
     Headers,
     /// Batches being decoded, including empty batches.
     Batches,
