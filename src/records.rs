@@ -38,7 +38,7 @@
 //!         }
 //!  }
 //! ```
-use anyhow::{anyhow, bail, ensure, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use bytes::{Buf, Bytes, BytesMut};
 use crc_fast::crc32_iscsi;
 use indexmap::IndexMap;
@@ -436,6 +436,17 @@ impl RecordBatchEncoder {
     }
 }
 
+// Grow only after parsing an item, and never request more than the checked count.
+fn reserve_next<T>(items: &mut Vec<T>, total: usize) -> Result<()> {
+    if items.len() == items.capacity() {
+        let additional = items.capacity().max(16).min(total - items.len());
+        items
+            .try_reserve_exact(additional)
+            .context("Failed to allocate decoded collection")?;
+    }
+    Ok(())
+}
+
 impl RecordBatchDecoder {
     /// Decode one RecordSet from the provided buffer.
     /// # Arguments
@@ -518,9 +529,17 @@ impl RecordBatchDecoder {
         version: i8,
         records: &mut Vec<Record>,
     ) -> Result<()> {
-        records.reserve((batch_decode_info.record_count as usize).min(buf.remaining()));
-        for _ in 0..batch_decode_info.record_count {
-            records.push(Record::decode_new(buf, batch_decode_info, version)?);
+        let count = batch_decode_info.record_count as usize;
+        // A v2 record needs at least a length prefix and six one-byte fields.
+        ensure!(
+            count <= buf.remaining() / 7,
+            "Record count ({count}) exceeds the remaining record data ({} bytes)",
+            buf.remaining()
+        );
+        for _ in 0..count {
+            let record = Record::decode_new(buf, batch_decode_info, version)?;
+            reserve_next(records, count)?;
+            records.push(record);
         }
         Ok(())
     }
@@ -896,15 +915,15 @@ impl Record {
             bail!("Unexpected negative record header count: {num_headers}");
         }
         let num_headers = num_headers as usize;
-        // Every header occupies at least one byte on the wire. Reject an impossible count
+        // Every header needs both a key length and a value length. Reject an impossible count
         // before using its untrusted value as an allocation capacity.
         ensure!(
-            num_headers <= buf.remaining(),
+            num_headers <= buf.remaining() / 2,
             "Record header count ({num_headers}) exceeds the remaining record size ({})",
             buf.remaining()
         );
 
-        let mut headers = IndexMap::with_capacity(num_headers);
+        let mut headers = IndexMap::new();
         for _ in 0..num_headers {
             // Key len
             let key_len: i32 = types::VarInt.decode(buf)?;
@@ -927,6 +946,12 @@ impl Record {
                 Ordering::Greater => Some(buf.try_get_bytes(value_len as usize)?),
             };
 
+            if headers.len() == headers.capacity() && !headers.contains_key(&key) {
+                let additional = headers.capacity().max(4).min(num_headers - headers.len());
+                headers
+                    .try_reserve_exact(additional)
+                    .context("Failed to allocate record headers")?;
+            }
             headers.insert(key, value);
         }
 
@@ -994,6 +1019,44 @@ mod tests {
         let expected_crc = crc32c(&batch[content_start..]);
 
         assert_eq!(expected_crc, supplied_crc);
+    }
+
+    #[test]
+    fn reject_impossible_record_count_before_reserving() {
+        let (mut info, mut data) =
+            RecordBatchDecoder::decode_batch_header_inner(&mut make_batch(1), 2).unwrap();
+        info.record_count = 1000;
+        let mut records = Vec::new();
+        let error =
+            RecordBatchDecoder::decode_new_records(&mut data, &info, 2, &mut records).unwrap_err();
+        assert!(error.to_string().contains("Record count"));
+        assert_eq!(records.capacity(), 0);
+    }
+
+    #[test]
+    fn minimum_record_and_header_sizes() {
+        let (info, _) =
+            RecordBatchDecoder::decode_batch_header_inner(&mut make_batch(1), 2).unwrap();
+        let mut records = Vec::new();
+        let mut data: &[u8] = &[12, 0, 0, 0, 1, 1, 0];
+        RecordBatchDecoder::decode_new_records(&mut data, &info, 2, &mut records).unwrap();
+        assert_eq!(records.len(), 1);
+
+        // One empty-key, null-value header occupies exactly two bytes.
+        let mut data: &[u8] = &[16, 0, 0, 0, 1, 1, 2, 0, 1];
+        assert_eq!(
+            Record::decode_new(&mut data, &info, 2)
+                .unwrap()
+                .headers
+                .len(),
+            1
+        );
+        // Only one byte remains for a claimed header.
+        let mut data: &[u8] = &[14, 0, 0, 0, 1, 1, 2, 0];
+        assert!(Record::decode_new(&mut data, &info, 2)
+            .unwrap_err()
+            .to_string()
+            .contains("header count"));
     }
 
     #[test]

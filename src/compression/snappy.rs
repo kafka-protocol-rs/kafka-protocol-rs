@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use bytes::{Buf as _, BufMut as _, Bytes, BytesMut};
 use snap::raw::*;
 
@@ -57,6 +57,18 @@ impl<B: ByteBufMut> Compressor<B> for Snappy {
 
 const MAGIC_HEADER: &[u8; 16] = b"\x82SNAPPY\x00\x00\x00\x00\x01\x00\x00\x00\x01";
 
+// Snappy copy tags produce at most 64 bytes from three encoded bytes. The other
+// copy forms and literals have lower ratios. 22x (including the length prefix)
+// is therefore a conservative format bound, not a workload compression policy.
+fn checked_decompress_len(compressed: &[u8]) -> Result<usize> {
+    let len = decompress_len(compressed).context("failed to read snappy header")?;
+    ensure!(
+        len <= compressed.len().saturating_mul(22),
+        "snappy decoded length exceeds the format's maximum expansion"
+    );
+    Ok(len)
+}
+
 impl<B: ByteBuf> Decompressor<B> for Snappy {
     type Buf = Bytes;
     fn decompress<R, F>(compressed: &mut B, f: F) -> Result<R>
@@ -80,8 +92,11 @@ impl<B: ByteBuf> Decompressor<B> for Snappy {
             .is_none_or(|magic| *magic != MAGIC_HEADER[..])
         {
             let compressed = compressed.copy_to_bytes(compressed.remaining());
-            let actual_len = decompress_len(&compressed).context("failed to read snappy header")?;
-            let mut tmp = BytesMut::zeroed(actual_len);
+            let actual_len = checked_decompress_len(&compressed)?;
+            let mut tmp = Vec::new();
+            tmp.try_reserve_exact(actual_len)
+                .context("failed to allocate snappy output")?;
+            tmp.resize(actual_len, 0);
             Decoder::new()
                 .decompress(&compressed, &mut tmp)
                 .context("failed to decompress raw snappy bytes")?;
@@ -92,7 +107,7 @@ impl<B: ByteBuf> Decompressor<B> for Snappy {
         // Consume the magic header now that we know it matches
         let _ = compressed.try_get_bytes(MAGIC_HEADER.len());
 
-        let mut uncompressed = BytesMut::new();
+        let mut uncompressed = Vec::new();
         while compressed.has_remaining() {
             let compressed_block_size = compressed
                 .try_get_u32()
@@ -102,13 +117,15 @@ impl<B: ByteBuf> Decompressor<B> for Snappy {
                 .try_get_bytes(compressed_block_size)
                 .context("not enough bytes for block")?;
 
-            let uncompressed_block_length = decompress_len(&compressed_block)
-                .context("failed to get snappy uncompressed length")?;
+            let uncompressed_block_length = checked_decompress_len(&compressed_block)?;
             let uncompressed_block_start = uncompressed.len();
-            uncompressed.resize(
-                uncompressed_block_start.saturating_add(uncompressed_block_length),
-                0,
-            );
+            let end = uncompressed_block_start
+                .checked_add(uncompressed_block_length)
+                .context("snappy output length overflow")?;
+            uncompressed
+                .try_reserve_exact(uncompressed_block_length)
+                .context("failed to allocate snappy output")?;
+            uncompressed.resize(end, 0);
 
             Decoder::new()
                 .decompress(
@@ -133,6 +150,19 @@ mod tests {
 
     use super::super::{Compressor as _, Decompressor as _};
     use super::Snappy;
+
+    #[test]
+    fn rejects_impossible_declared_lengths() {
+        // A 4096-byte declaration without any tags cannot be a valid block.
+        let raw = [0x80, 0x20];
+        let mut xerial = Vec::from(super::MAGIC_HEADER.as_slice());
+        xerial.extend_from_slice(&(raw.len() as u32).to_be_bytes());
+        xerial.extend_from_slice(&raw);
+        for encoded in [raw.to_vec(), xerial] {
+            let error = Snappy::decompress(&mut Bytes::from(encoded), |_| Ok(())).unwrap_err();
+            assert!(error.to_string().contains("maximum expansion"));
+        }
+    }
 
     #[test]
     fn compression() {
