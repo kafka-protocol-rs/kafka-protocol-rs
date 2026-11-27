@@ -5,10 +5,26 @@
 ### Breaking changes ⚠️
 
 * Remove the public `records::IEEE` CRC helper
+* Record decoding now defaults to 128 MiB of decoded record-data bytes, 1,000,000
+  records, 1,000,000 header entries, and 4,096 batches per call. `decode_all` shares
+  one budget across all batches; uncompressed data and duplicate headers count too.
+  Use `decode_with_budget` / `decode_all_with_budget` with `DecodeLimits` to configure
+  the policy, or `DecodeBudget::unlimited()` for trusted workloads. Charges survive
+  errors; a limit violation makes the budget unusable. Custom decompression
+  callbacks (`Some`) remain responsible for their own resource limits.
+* Built-in low-level decompressors now limit decoded output to 128 MiB per call.
+  `BoundedDecompressor` accepts a shared `DecodeBudget`. Zstandard also has an
+  independent configurable history-window limit (default: 128 MiB).
 
 ### Features
 
 * Use `crc-fast` 1.10.0 for hardware-accelerated record batch CRC32C checksums
+
+### Fixes
+
+* Reject impossible record/header counts and Snappy output declarations before
+  allocating, and grow decoded collections fallibly after parsing entries.
+* Validate LZ4 stream completion before returning decoded data.
 
 ### Dependency updates
 

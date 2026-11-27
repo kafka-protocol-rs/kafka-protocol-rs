@@ -1,10 +1,11 @@
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use bytes::{Buf as _, BufMut as _, Bytes, BytesMut};
 use snap::raw::*;
 
 use crate::protocol::buf::{ByteBuf, ByteBufMut};
 
-use super::{Compressor, Decompressor};
+use super::{BoundedDecompressor, Compressor, Decompressor};
+use crate::records::DecodeBudget;
 
 /// Kafka variant of the snappy compression algorithm. See
 /// <https://github.com/xerial/snappy-java?tab=readme-ov-file#compatibility-notes> for notes about
@@ -57,69 +58,87 @@ impl<B: ByteBufMut> Compressor<B> for Snappy {
 
 const MAGIC_HEADER: &[u8; 16] = b"\x82SNAPPY\x00\x00\x00\x00\x01\x00\x00\x00\x01";
 
+// Snappy copy tags produce at most 64 bytes from three encoded bytes. The other
+// copy forms and literals have lower ratios. 22x (including the length prefix)
+// is therefore a conservative format bound, not a workload compression policy.
+fn checked_decompress_len(compressed: &[u8]) -> Result<usize> {
+    let len = decompress_len(compressed).context("failed to read snappy header")?;
+    ensure!(
+        len <= compressed.len().saturating_mul(22),
+        "snappy decoded length exceeds the format's maximum expansion"
+    );
+    Ok(len)
+}
+
 impl<B: ByteBuf> Decompressor<B> for Snappy {
     type Buf = Bytes;
-    fn decompress<R, F>(compressed: &mut B, f: F) -> Result<R>
+    fn decompress<R, F>(buf: &mut B, f: F) -> Result<R>
     where
         F: FnOnce(&mut Self::Buf) -> Result<R>,
     {
-        // See https://github.com/xerial/snappy-java?tab=readme-ov-file#compatibility-notes
-        if !compressed.has_remaining() {
-            anyhow::bail!("expected some bytes in snappy stream");
-        }
-
-        // We fall back to non-Kafka "raw" snappy compression if the magic header is not present
-        // just like the [Java implementation](https://github.com/xerial/snappy-java/blob/48b31663c8b9d01d758368a26416ef6194045c5f/src/main/java/org/xerial/snappy/SnappyInputStream.java#L114).
-        //
-        // We must peek at the magic bytes without consuming them, because
-        // try_get_bytes advances the buffer. If the magic doesn't match,
-        // the raw fallback needs the full original data.
-        if compressed
-            .try_peek_bytes(0..MAGIC_HEADER.len())
-            .ok()
-            .is_none_or(|magic| *magic != MAGIC_HEADER[..])
-        {
-            let compressed = compressed.copy_to_bytes(compressed.remaining());
-            let actual_len = decompress_len(&compressed).context("failed to read snappy header")?;
-            let mut tmp = BytesMut::zeroed(actual_len);
-            Decoder::new()
-                .decompress(&compressed, &mut tmp)
-                .context("failed to decompress raw snappy bytes")?;
-
-            return f(&mut tmp.into());
-        }
-
-        // Consume the magic header now that we know it matches
-        let _ = compressed.try_get_bytes(MAGIC_HEADER.len());
-
-        let mut uncompressed = BytesMut::new();
-        while compressed.has_remaining() {
-            let compressed_block_size = compressed
-                .try_get_u32()
-                .context("not enough bytes to read compressed block length")?
-                as usize;
-            let compressed_block = compressed
-                .try_get_bytes(compressed_block_size)
-                .context("not enough bytes for block")?;
-
-            let uncompressed_block_length = decompress_len(&compressed_block)
-                .context("failed to get snappy uncompressed length")?;
-            let uncompressed_block_start = uncompressed.len();
-            uncompressed.resize(
-                uncompressed_block_start.saturating_add(uncompressed_block_length),
-                0,
-            );
-
-            Decoder::new()
-                .decompress(
-                    &compressed_block,
-                    &mut uncompressed[uncompressed_block_start..],
-                )
-                .context("failed to decompress snappy block")?;
-        }
-
-        f(&mut uncompressed.into())
+        Self::decompress_with_budget(buf, &mut DecodeBudget::default(), |decoded, _| f(decoded))
     }
+}
+
+impl<B: ByteBuf> BoundedDecompressor<B> for Snappy {
+    fn decompress_with_budget<R, F>(buf: &mut B, budget: &mut DecodeBudget, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut Self::Buf, &mut DecodeBudget) -> Result<R>,
+    {
+        budget.check()?;
+        let input = buf.copy_to_bytes(buf.remaining());
+        ensure!(!input.is_empty(), "expected some bytes in snappy stream");
+
+        // Preflight every block before allocating any output. A second pass avoids
+        // retaining a separate collection of attacker-controlled block descriptors.
+        let mut total = 0usize;
+        visit_blocks(&input, |block| {
+            let len = checked_decompress_len(block)?;
+            budget.charge(crate::records::DecodeResource::DecodedBytes, len)?;
+            total = total
+                .checked_add(len)
+                .context("snappy output length overflow")?;
+            Ok(())
+        })?;
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(total)
+            .context("failed to allocate snappy output")?;
+        output.resize(total, 0);
+        let mut offset = 0;
+        let mut decoder = Decoder::new();
+        visit_blocks(&input, |block| {
+            let len = checked_decompress_len(block)?;
+            let end = offset + len;
+            let written = decoder
+                .decompress(block, &mut output[offset..end])
+                .context("failed to decompress snappy block")?;
+            ensure!(written == len, "snappy decoded length mismatch");
+            offset = end;
+            Ok(())
+        })?;
+        f(&mut output.into(), budget)
+    }
+}
+
+fn visit_blocks(input: &[u8], mut f: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
+    // Preserve Java-compatible raw Snappy fallback when the Xerial header is absent.
+    let Some(mut remaining) = input.strip_prefix(MAGIC_HEADER) else {
+        return f(input);
+    };
+    while !remaining.is_empty() {
+        let len = u32::from_be_bytes(
+            remaining
+                .get(..4)
+                .context("not enough bytes to read compressed block length")?
+                .try_into()?,
+        ) as usize;
+        remaining = &remaining[4..];
+        let block = remaining.get(..len).context("not enough bytes for block")?;
+        f(block)?;
+        remaining = &remaining[len..];
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -133,6 +152,19 @@ mod tests {
 
     use super::super::{Compressor as _, Decompressor as _};
     use super::Snappy;
+
+    #[test]
+    fn rejects_impossible_declared_lengths() {
+        // A 4096-byte declaration without any tags cannot be a valid block.
+        let raw = [0x80, 0x20];
+        let mut xerial = Vec::from(super::MAGIC_HEADER.as_slice());
+        xerial.extend_from_slice(&(raw.len() as u32).to_be_bytes());
+        xerial.extend_from_slice(&raw);
+        for encoded in [raw.to_vec(), xerial] {
+            let error = Snappy::decompress(&mut Bytes::from(encoded), |_| Ok(())).unwrap_err();
+            assert!(error.to_string().contains("maximum expansion"));
+        }
+    }
 
     #[test]
     fn compression() {
